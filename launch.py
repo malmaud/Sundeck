@@ -1,5 +1,5 @@
 from absl import app, flags
-from lib import launch_game, wait_for_game
+from steam import launch_game, wait_for_game
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("app_id", None, "Steam App ID to launch.", required=True)
