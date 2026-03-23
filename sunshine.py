@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -37,12 +38,13 @@ def build_sunshine_config(
     Entries previously written by this function (identified by _SUNSHINE_CMD_MARKER
     in their 'cmd') are replaced; all other entries are preserved.
     """
+    uv = shutil.which("uv") or "uv"
     kept = [a for a in existing.apps if _SUNSHINE_CMD_MARKER not in a.cmd]
     new_apps = [
         SunshineApp.model_validate(
             {
                 "name": game.name,
-                "cmd": f'uv run --directory "{launch_script.parent}" "{launch_script}" --app_id={game.app_id}',
+                "cmd": f"{uv} run --directory {launch_script.parent} {launch_script} --app_id={game.app_id}",
                 "image-path": game.thumbnail,
             }
         )
