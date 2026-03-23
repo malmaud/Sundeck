@@ -6,6 +6,8 @@ Then open:  http://localhost:5000
 import base64
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -171,6 +173,50 @@ def _restart_elevated() -> None:
     _run_elevated("net stop ApolloService; net start ApolloService")
 
 
+def _check_port(port: int) -> None:
+    """Exit with a helpful error if another process is already using *port*."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+        sock.close()
+        return
+    except OSError:
+        pass
+
+    # Port is taken – try to identify the culprit.
+    owner = f"(unknown process)"
+    try:
+        out = subprocess.check_output(
+            ["netstat", "-ano"], text=True, creationflags=0x08000000,  # CREATE_NO_WINDOW
+        )
+        pattern = re.compile(rf":{port}\b")
+        for line in out.splitlines():
+            if pattern.search(line) and "LISTENING" in line:
+                pid = line.strip().rsplit(None, 1)[-1]
+                try:
+                    tl = subprocess.check_output(
+                        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                        text=True, creationflags=0x08000000,
+                    )
+                    name = tl.strip().split(",")[0].strip('"')
+                    owner = f"{name} (PID {pid})"
+                except Exception:
+                    owner = f"PID {pid}"
+                break
+    except Exception:
+        pass
+
+    # Extract numeric PID for the kill hint if we found one.
+    pid_match = re.search(r"PID (\d+)", owner)
+    kill_hint = f"  Kill it with:  taskkill /PID {pid_match.group(1)} /F" if pid_match else ""
+    print(
+        f"ERROR: Port {port} is already in use by {owner}.{chr(10) + kill_hint if kill_hint else ''}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 if __name__ == "__main__":
+    _check_port(5000)
     webbrowser.open("http://localhost:5000")
     app.run(port=5000, debug=False)
