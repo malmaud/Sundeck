@@ -4,6 +4,7 @@ Run with:  uv run server.py
 Then open:  http://localhost:5000
 """
 import base64
+import json
 import os
 import subprocess
 import sys
@@ -22,12 +23,42 @@ if getattr(sys, "frozen", False):
     # but thumbnails must be writable so store them next to the executable.
     _UI_DIR = Path(sys._MEIPASS) / "ui"  # type: ignore[attr-defined]
     _THUMBNAIL_DIR = Path(sys.executable).parent / "thumbnails"
+    _SETTINGS_FILE = Path(sys.executable).parent / "settings.json"
 else:
     _UI_DIR = _PYTHON_DIR.parent / "ui"
     _THUMBNAIL_DIR = _PYTHON_DIR / "thumbnails"
-_APOLLO_CONFIG = Path(
-    os.environ.get("APOLLO_CONFIG", r"C:\Program Files\Apollo\config\apps.json")
-)
+    _SETTINGS_FILE = _PYTHON_DIR / "settings.json"
+
+_KNOWN_CONFIG_PATHS = [
+    r"C:\Program Files\Apollo\config\apps.json",
+    r"C:\Program Files\Sunshine\config\apps.json",
+]
+_DEFAULT_CONFIG_PATH = r"C:\Program Files\Apollo\config\apps.json"
+
+
+def _load_config_path() -> Path:
+    if _SETTINGS_FILE.exists():
+        try:
+            data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            if "config_path" in data:
+                return Path(data["config_path"])
+        except Exception:
+            pass
+    env = os.environ.get("APOLLO_CONFIG")
+    if env:
+        return Path(env)
+    return Path(_DEFAULT_CONFIG_PATH)
+
+
+def _save_config_path(path: Path) -> None:
+    data: dict = {}
+    if _SETTINGS_FILE.exists():
+        try:
+            data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    data["config_path"] = str(path)
+    _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 app = Flask(__name__, static_folder=str(_UI_DIR), static_url_path="")
 
@@ -56,10 +87,27 @@ def api_games() -> Response:
     ])
 
 
+@app.route("/api/settings", methods=["GET"])
+def api_get_settings() -> Response:
+    config_path = _load_config_path()
+    suggestions = [p for p in _KNOWN_CONFIG_PATHS if Path(p).exists()]
+    return jsonify({"config_path": str(config_path), "suggestions": suggestions})
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_update_settings() -> Response | tuple[Response, int]:
+    body = request.get_json(silent=True) or {}
+    config_path = body.get("config_path", "").strip()
+    if not config_path:
+        return jsonify({"error": "config_path required"}), 400
+    _save_config_path(Path(config_path))
+    return jsonify({"status": "ok", "config_path": config_path})
+
+
 @app.route("/api/config", methods=["GET"])
 def api_get_config() -> Response:
     try:
-        return jsonify(get_managed_apps(_APOLLO_CONFIG))
+        return jsonify(get_managed_apps(_load_config_path()))
     except Exception:
         return jsonify([])
 
@@ -76,11 +124,12 @@ def api_update_config() -> Response | tuple[Response, int]:
     order = {aid: i for i, aid in enumerate(app_ids)}
     games.sort(key=lambda g: order.get(g.app_id, 0))
 
-    existing = load_sunshine_config(_APOLLO_CONFIG)
+    apollo_config = _load_config_path()
+    existing = load_sunshine_config(apollo_config)
     config = build_sunshine_config(existing, games)
     config_json = config.model_dump_json(by_alias=True, indent=4)
 
-    _write_elevated(_APOLLO_CONFIG, config_json)
+    _write_elevated(apollo_config, config_json)
     _restart_elevated()
 
     return jsonify({"status": "ok", "count": len(app_ids)})

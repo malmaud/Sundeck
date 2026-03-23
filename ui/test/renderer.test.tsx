@@ -33,12 +33,22 @@ function mockFetch(handlers: Record<string, FetchHandler>): void {
   });
 }
 
+const DEFAULT_SETTINGS = {
+  config_path: "C:\\Program Files\\Apollo\\config\\apps.json",
+  suggestions: [
+    "C:\\Program Files\\Apollo\\config\\apps.json",
+    "C:\\Program Files\\Sunshine\\config\\apps.json",
+  ],
+};
+
 beforeEach(() => {
   localStorage.clear();
   mockFetch({
     "GET /api/games": () => ({ body: GAMES }),
     "GET /api/config": () => ({ body: [] }),
     "POST /api/config": () => ({ body: { status: "ok", count: 2 } }),
+    "GET /api/settings": () => ({ body: DEFAULT_SETTINGS }),
+    "POST /api/settings": () => ({ body: { status: "ok", config_path: DEFAULT_SETTINGS.config_path } }),
   });
 });
 
@@ -157,5 +167,93 @@ describe("renderer sunshine sync", () => {
       expect(screen.getByText("Refresh")).not.toBeDisabled();
       expect(screen.getByText("Update Apollo")).not.toBeDisabled();
     });
+  });
+});
+
+describe("renderer settings panel", () => {
+  test("settings panel is hidden by default", async () => {
+    await renderApp();
+    expect(screen.queryByPlaceholderText("config-path-input")).toBeNull();
+    expect(screen.queryByText("Save")).toBeNull();
+  });
+
+  test("gear button toggles settings panel open and closed", async () => {
+    await renderApp();
+    const gear = screen.getByText("Settings");
+    fireEvent.click(gear);
+    expect(screen.getByText("Save")).toBeInTheDocument();
+    fireEvent.click(gear);
+    expect(screen.queryByText("Save")).toBeNull();
+  });
+
+  test("settings panel shows config path loaded from api", async () => {
+    await renderApp();
+    fireEvent.click(screen.getByText("Settings"));
+    const input = screen.getByDisplayValue(DEFAULT_SETTINGS.config_path) as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+  });
+
+  test("save calls POST /api/settings with current input value", async () => {
+    await renderApp();
+    fireEvent.click(screen.getByText("Settings"));
+
+    const newPath = "C:\\Program Files\\Sunshine\\config\\apps.json";
+    const input = screen.getByDisplayValue(DEFAULT_SETTINGS.config_path) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: newPath } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      const fetchMock = (globalThis as any).fetch as jest.Mock;
+      const postCall = fetchMock.mock.calls.find(
+        ([url, opts]: [string, RequestInit?]) =>
+          url === "/api/settings" && opts?.method === "POST"
+      );
+      expect(postCall).toBeTruthy();
+      const body = JSON.parse(postCall[1].body as string);
+      expect(body.config_path).toBe(newPath);
+    });
+  });
+
+  test("settings panel closes after successful save", async () => {
+    await renderApp();
+    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(screen.queryByText("Save")).toBeNull();
+    });
+  });
+
+  test("shows success status after save", async () => {
+    await renderApp();
+    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Save"));
+    await screen.findByText("Settings saved.");
+  });
+
+  test("shows error status when save fails", async () => {
+    mockFetch({
+      "GET /api/games": () => ({ body: GAMES }),
+      "GET /api/config": () => ({ body: [] }),
+      "GET /api/settings": () => ({ body: DEFAULT_SETTINGS }),
+      "POST /api/settings": () => ({ status: 500, body: { error: "Permission denied" } }),
+    });
+    await renderApp();
+    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Save"));
+    await screen.findByText("Permission denied");
+  });
+
+  test("settings panel stays open after failed save", async () => {
+    mockFetch({
+      "GET /api/games": () => ({ body: GAMES }),
+      "GET /api/config": () => ({ body: [] }),
+      "GET /api/settings": () => ({ body: DEFAULT_SETTINGS }),
+      "POST /api/settings": () => ({ status: 500, body: { error: "Permission denied" } }),
+    });
+    await renderApp();
+    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Save"));
+    await screen.findByText("Permission denied");
+    expect(screen.getByText("Save")).toBeInTheDocument();
   });
 });

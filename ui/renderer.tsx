@@ -12,6 +12,11 @@ interface ConfigApp {
   name: string;
 }
 
+interface Settings {
+  config_path: string;
+  suggestions: string[];
+}
+
 interface Status {
   msg: string;
   type: "loading" | "error" | "success";
@@ -49,6 +54,22 @@ async function apiGetConfig(): Promise<ConfigApp[]> {
   const res = await fetch("/api/config");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json() as Promise<ConfigApp[]>;
+}
+
+async function apiGetSettings(): Promise<Settings> {
+  const res = await fetch("/api/settings");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<Settings>;
+}
+
+async function apiSaveSettings(configPath: string): Promise<void> {
+  const res = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config_path: configPath }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 }
 
 async function apiUpdateConfig(appIds: number[]): Promise<{ status: string; count: number }> {
@@ -92,6 +113,9 @@ function App() {
   const [count, setCount] = useState(10);
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
+  const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [] });
+  const [configPathInput, setConfigPathInput] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const loadGames = useCallback(async () => {
     setBusy(true);
@@ -116,7 +140,29 @@ function App() {
     }
   }, [count]);
 
-  useEffect(() => { loadGames(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    loadGames();
+    apiGetSettings().then((s) => {
+      setSettings(s);
+      setConfigPathInput(s.config_path);
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSaveSettings(): Promise<void> {
+    setBusy(true);
+    try {
+      await apiSaveSettings(configPathInput);
+      const s = await apiGetSettings();
+      setSettings(s);
+      setConfigPathInput(s.config_path);
+      setSettingsOpen(false);
+      setStatus({ msg: "Settings saved.", type: "success" });
+    } catch (e) {
+      setStatus({ msg: (e as Error).message, type: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function toggleGame(appId: number): void {
     setCheckedIds((prev) => {
@@ -159,6 +205,7 @@ function App() {
   return (
     <>
       <header>
+        <div className="header-row">
         <h1>SteamLaunch</h1>
         <div className="controls">
           <label>
@@ -174,7 +221,28 @@ function App() {
           </label>
           <button className="btn-secondary" onClick={loadGames} disabled={busy}>Refresh</button>
           <button className="btn-primary" onClick={handleUpdate} disabled={busy}>Update Apollo</button>
+          <button className="btn-secondary" onClick={() => setSettingsOpen((o) => !o)}>Settings</button>
         </div>
+        </div>
+        {settingsOpen && (
+          <div className="settings-panel">
+            <label>
+              Config path:
+              <input
+                list="config-path-suggestions"
+                className="config-path-input"
+                value={configPathInput}
+                onChange={(e) => setConfigPathInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSaveSettings()}
+                spellCheck={false}
+              />
+              <datalist id="config-path-suggestions">
+                {settings.suggestions.map((s) => <option key={s} value={s} />)}
+              </datalist>
+            </label>
+            <button className="btn-primary" onClick={handleSaveSettings} disabled={busy}>Save</button>
+          </div>
+        )}
       </header>
       <main>
         {status && (

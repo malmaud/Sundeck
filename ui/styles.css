@@ -13,11 +13,45 @@ body {
 
 header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   padding: 16px 24px;
   background: #16213e;
   border-bottom: 1px solid #0f3460;
+  gap: 12px;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-panel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 2px;
+  border-top: 1px solid #0f3460;
+}
+
+.settings-panel label {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.config-path-input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-size: 13px;
+  font-family: monospace;
+  min-width: 0;
 }
 
 header h1 {

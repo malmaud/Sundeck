@@ -8,3 +8,4 @@ ui/node_modules/
 ui/renderer.bundle.js
 dist/
 build/
+python/settings.json
