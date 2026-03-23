@@ -58,19 +58,19 @@ button {
   transition: background 0.15s;
 }
 
-#btn-refresh {
+.btn-secondary {
   background: #0f3460;
   color: #e0e0e0;
 }
-#btn-refresh:hover {
+.btn-secondary:hover:not(:disabled) {
   background: #1a4a7a;
 }
 
-#btn-update {
+.btn-primary {
   background: #e94560;
   color: #fff;
 }
-#btn-update:hover {
+.btn-primary:hover:not(:disabled) {
   background: #d63851;
 }
 
@@ -79,8 +79,13 @@ button:disabled {
   cursor: not-allowed;
 }
 
+
+main {
+  padding: 24px;
+}
+
 .status {
-  margin: 12px 24px;
+  margin-bottom: 12px;
   padding: 10px 16px;
   border-radius: 4px;
   font-size: 13px;
@@ -98,8 +103,36 @@ button:disabled {
   border: 1px solid #2a4a6a;
 }
 
-main {
-  padding: 24px;
+
+.game-card.will-add {
+  outline: 2px solid #4caf82;
+}
+
+.game-card.will-remove {
+  outline: 2px solid #e94560;
+}
+
+.diff-badge {
+  position: absolute;
+  bottom: 32px;
+  right: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.diff-badge.add {
+  background: #0a3d2a;
+  color: #4caf82;
+  border: 1px solid #4caf82;
+}
+
+.diff-badge.remove {
+  background: #3d0a0a;
+  color: #e94560;
+  border: 1px solid #e94560;
 }
 
 .game-grid {

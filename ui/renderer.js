@@ -1,10 +1,6 @@
-const gamesContainer = document.getElementById("games");
-const statusEl = document.getElementById("status");
-const countInput = document.getElementById("count");
-const btnRefresh = document.getElementById("btn-refresh");
-const btnUpdate = document.getElementById("btn-update");
+import { useState, useEffect, useCallback } from "react";
+import ReactDOM from "react-dom/client";
 
-const checkedGames = new Set();
 const UNCHECKED_KEY = "uncheckedGames";
 
 function loadUnchecked() {
@@ -19,113 +15,146 @@ function saveUnchecked(unchecked) {
   localStorage.setItem(UNCHECKED_KEY, JSON.stringify([...unchecked]));
 }
 
-function showStatus(msg, type = "loading") {
-  statusEl.textContent = msg;
-  statusEl.className = `status ${type}`;
-  statusEl.hidden = false;
+function GameCard({ game, checked, onToggle, willAdd, willRemove }) {
+  let extra = "";
+  if (willAdd) extra = " will-add";
+  else if (willRemove) extra = " will-remove";
+  return (
+    <div className={`game-card${checked ? " checked" : ""}${extra}`}>
+      <input
+        type="checkbox"
+        className="game-check"
+        checked={checked}
+        onChange={onToggle}
+      />
+      {game.thumbnail && (
+        <img src={`file:///${game.thumbnail.replace(/\\/g, "/")}`} alt={game.name} />
+      )}
+      <div className="game-name" title={game.name}>{game.name}</div>
+      <div className="game-id">App ID: {game.app_id}</div>
+      {willAdd && <div className="diff-badge add">+ add</div>}
+      {willRemove && <div className="diff-badge remove">− remove</div>}
+    </div>
+  );
 }
 
-function hideStatus() {
-  statusEl.hidden = true;
-}
+function App() {
+  const [games, setGames] = useState([]);
+  const [checkedIds, setCheckedIds] = useState(new Set());
+  const [configApps, setConfigApps] = useState([]);
+  const [count, setCount] = useState(10);
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
 
-function setButtons(disabled) {
-  btnRefresh.disabled = disabled;
-  btnUpdate.disabled = disabled;
-}
-
-function renderGames(games) {
-  gamesContainer.innerHTML = "";
-  for (const game of games) {
-    const card = document.createElement("div");
-    card.className = "game-card";
-    if (checkedGames.has(game.app_id)) {
-      card.classList.add("checked");
-    }
-
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.className = "game-check";
-    checkbox.checked = checkedGames.has(game.app_id);
-    checkbox.addEventListener("change", () => {
+  const loadGames = useCallback(async () => {
+    setBusy(true);
+    setStatus({ msg: "Loading games...", type: "loading" });
+    try {
+      const [result, currentConfig] = await Promise.all([
+        window.api.getGames(count),
+        window.api.getCurrentConfig(),
+      ]);
+      if (result.error) throw new Error(result.error);
       const unchecked = loadUnchecked();
-      if (checkbox.checked) {
-        checkedGames.add(game.app_id);
-        card.classList.add("checked");
-        unchecked.delete(game.app_id);
+      const checked = new Set(
+        result.filter((g) => !unchecked.has(g.app_id)).map((g) => g.app_id)
+      );
+      setGames(result);
+      setCheckedIds(checked);
+      setConfigApps(currentConfig);
+      setStatus(null);
+    } catch (e) {
+      setStatus({ msg: e.message, type: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }, [count]);
+
+  useEffect(() => { loadGames(); }, []);
+
+  function toggleGame(appId) {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      const unchecked = loadUnchecked();
+      if (next.has(appId)) {
+        next.delete(appId);
+        unchecked.add(appId);
       } else {
-        checkedGames.delete(game.app_id);
-        card.classList.remove("checked");
-        unchecked.add(game.app_id);
+        next.add(appId);
+        unchecked.delete(appId);
       }
       saveUnchecked(unchecked);
+      return next;
     });
-
-    const img = document.createElement("img");
-    if (game.thumbnail) {
-      img.src = `file:///${game.thumbnail.replace(/\\/g, "/")}`;
-    }
-    img.alt = game.name;
-
-    const name = document.createElement("div");
-    name.className = "game-name";
-    name.textContent = game.name;
-    name.title = game.name;
-
-    const id = document.createElement("div");
-    id.className = "game-id";
-    id.textContent = `App ID: ${game.app_id}`;
-
-    card.appendChild(checkbox);
-    card.appendChild(img);
-    card.appendChild(name);
-    card.appendChild(id);
-    gamesContainer.appendChild(card);
   }
+
+  async function handleUpdate() {
+    const appIds = [...checkedIds];
+    if (appIds.length === 0) {
+      setStatus({ msg: "No games selected.", type: "error" });
+      return;
+    }
+    setBusy(true);
+    setStatus({ msg: "Updating Apollo config...", type: "loading" });
+    try {
+      const result = await window.api.updateConfig(appIds);
+      if (result.error) throw new Error(result.error);
+      const updated = await window.api.getCurrentConfig();
+      setConfigApps(updated);
+      setStatus({ msg: `Apollo config updated with ${result.count} games.`, type: "success" });
+    } catch (e) {
+      setStatus({ msg: e.message, type: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const configIdSet = new Set(configApps.map((a) => a.app_id));
+
+  return (
+    <>
+      <header>
+        <h1>SteamLaunch</h1>
+        <div className="controls">
+          <label>
+            Games:
+            <input
+              type="number"
+              value={count}
+              min="1"
+              max="50"
+              onChange={(e) => setCount(parseInt(e.target.value) || 10)}
+              onKeyDown={(e) => e.key === "Enter" && loadGames()}
+            />
+          </label>
+          <button className="btn-secondary" onClick={loadGames} disabled={busy}>Refresh</button>
+          <button className="btn-primary" onClick={handleUpdate} disabled={busy}>Update Apollo</button>
+        </div>
+      </header>
+      <main>
+        {status && (
+          <div className={`status ${status.type}`}>{status.msg}</div>
+        )}
+        <div className="game-grid">
+          {games.map((game) => (
+            <GameCard
+              key={game.app_id}
+              game={game}
+              checked={checkedIds.has(game.app_id)}
+              onToggle={() => toggleGame(game.app_id)}
+              willAdd={checkedIds.has(game.app_id) && !configIdSet.has(game.app_id)}
+              willRemove={!checkedIds.has(game.app_id) && configIdSet.has(game.app_id)}
+            />
+          ))}
+        </div>
+      </main>
+    </>
+  );
 }
 
-async function loadGames() {
-  const count = parseInt(countInput.value) || 10;
-  setButtons(true);
-  showStatus("Loading games...");
-  try {
-    const games = await window.api.getGames(count);
-    if (games.error) throw new Error(games.error);
-    const unchecked = loadUnchecked();
-    checkedGames.clear();
-    for (const game of games) {
-      if (!unchecked.has(game.app_id)) {
-        checkedGames.add(game.app_id);
-      }
-    }
-    renderGames(games);
-    hideStatus();
-  } catch (e) {
-    showStatus(e.message, "error");
-  } finally {
-    setButtons(false);
-  }
+export { App };
+
+const rootEl = document.getElementById("root");
+if (rootEl) {
+  ReactDOM.createRoot(rootEl).render(<App />);
 }
-
-btnRefresh.addEventListener("click", loadGames);
-
-btnUpdate.addEventListener("click", async () => {
-  const appIds = [...checkedGames];
-  if (appIds.length === 0) {
-    showStatus("No games selected.", "error");
-    return;
-  }
-  setButtons(true);
-  showStatus("Updating Apollo config...");
-  try {
-    const result = await window.api.updateConfig(appIds);
-    if (result.error) throw new Error(result.error);
-    showStatus(`Apollo config updated with ${result.count} games.`, "success");
-  } catch (e) {
-    showStatus(e.message, "error");
-  } finally {
-    setButtons(false);
-  }
-});
-
-loadGames();

@@ -4,16 +4,34 @@
   "description": "Steam game launcher UI for Apollo/Sunshine",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "build": "esbuild renderer.js --bundle --outfile=renderer.bundle.js --platform=browser --format=iife --loader:.js=jsx --jsx=automatic",
+    "start": "npm run build && electron .",
     "test": "jest"
+  },
+  "jest": {
+    "setupFilesAfterEnv": [
+      "<rootDir>/jest.setup.js"
+    ]
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-env": "^7.29.2",
+    "@babel/preset-react": "^7.28.5",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "babel-jest": "^30.3.0",
     "electron": "^33.0.0",
+    "esbuild": "^0.27.4",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0"
+  },
+  "dependencies": {
+    "@babel/standalone": "^7.29.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
   }
 }

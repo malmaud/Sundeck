@@ -102,6 +102,22 @@ app.on("window-all-closed", () => app.quit());
 
 ipcMain.handle("get-games", (_e, count) => runCli("games", `--count=${count}`));
 
+ipcMain.handle("get-current-config", () => {
+  try {
+    const raw = fs.readFileSync(APOLLO_CONFIG, "utf-8");
+    const { apps = [] } = JSON.parse(raw);
+    return apps
+      .filter((a) => a.cmd && a.cmd.includes("cli.py launch"))
+      .map((a) => {
+        const m = a.cmd.match(/--app_id=(\d+)/);
+        return m ? { app_id: parseInt(m[1], 10), name: a.name } : null;
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+});
+
 ipcMain.handle("update-config", async (_e, appIds) => {
   const configJson = await runCliRaw("build", `--app_ids=${appIds.join(",")}`);
   await writeFileElevated(APOLLO_CONFIG, configJson);

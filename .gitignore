@@ -5,3 +5,4 @@ launchers/
 *.ipynb
 .ipynb_checkpoints/
 ui/node_modules/
+ui/renderer.bundle.js

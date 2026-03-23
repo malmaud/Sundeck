@@ -3,83 +3,60 @@
  */
 "use strict";
 
+const { render, screen, fireEvent, waitFor, act } = require("@testing-library/react");
+const { App } = require("../renderer");
+
 const GAMES = [
   { app_id: 100, name: "Half-Life", thumbnail: "" },
   { app_id: 200, name: "Portal", thumbnail: "" },
 ];
 
-function flushPromises() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
+beforeEach(() => {
+  localStorage.clear();
+  window.api = {
+    getGames: jest.fn().mockResolvedValue(GAMES),
+    updateConfig: jest.fn().mockResolvedValue({ status: "ok", count: 2 }),
+    getCurrentConfig: jest.fn().mockResolvedValue([]),
+  };
+});
 
-function setupDom() {
-  document.body.innerHTML = `
-    <input type="number" id="count" value="10" />
-    <button id="btn-refresh">Refresh</button>
-    <button id="btn-update">Update Apollo</button>
-    <div id="status" class="status" hidden></div>
-    <div id="games" class="game-grid"></div>
-  `;
+async function renderApp() {
+  render(<App />);
+  await screen.findByText("Half-Life");
 }
 
 describe("renderer sunshine sync", () => {
-  beforeEach(async () => {
-    setupDom();
-    window.api = {
-      getGames: jest.fn().mockResolvedValue(GAMES),
-      updateConfig: jest.fn().mockResolvedValue({ status: "ok", count: 2 }),
-    };
-    jest.resetModules();
-    require("../renderer");
-    await flushPromises(); // let initial loadGames() complete
-  });
-
   test("calls updateConfig with all loaded game IDs on update", async () => {
-    document.getElementById("btn-update").click();
-    await flushPromises();
-
-    expect(window.api.updateConfig).toHaveBeenCalledTimes(1);
-    expect(window.api.updateConfig).toHaveBeenCalledWith(
-      expect.arrayContaining([100, 200])
-    );
+    await renderApp();
+    fireEvent.click(screen.getByText("Update Apollo"));
+    await waitFor(() => {
+      expect(window.api.updateConfig).toHaveBeenCalledTimes(1);
+      expect(window.api.updateConfig).toHaveBeenCalledWith(
+        expect.arrayContaining([100, 200])
+      );
+    });
   });
 
   test("shows success status after sync", async () => {
-    document.getElementById("btn-update").click();
-    await flushPromises();
-
-    const status = document.getElementById("status");
-    expect(status.hidden).toBe(false);
-    expect(status.className).toContain("success");
-    expect(status.textContent).toMatch(/2 games/);
+    await renderApp();
+    fireEvent.click(screen.getByText("Update Apollo"));
+    await screen.findByText(/2 games/);
   });
 
   test("shows error status when no games are selected", async () => {
-    // Uncheck all rendered game cards
-    document.querySelectorAll(".game-check").forEach((cb) => {
-      cb.checked = false;
-      cb.dispatchEvent(new Event("change"));
+    await renderApp();
+    screen.getAllByRole("checkbox").forEach((cb) => {
+      if (cb.checked) fireEvent.click(cb);
     });
-
-    document.getElementById("btn-update").click();
-    await flushPromises();
-
-    const status = document.getElementById("status");
-    expect(status.hidden).toBe(false);
-    expect(status.className).toContain("error");
-    expect(status.textContent).toMatch(/No games selected/);
+    fireEvent.click(screen.getByText("Update Apollo"));
+    await screen.findByText(/No games selected/);
   });
 
   test("shows error status when sync fails", async () => {
     window.api.updateConfig.mockRejectedValue(new Error("Access denied"));
-
-    document.getElementById("btn-update").click();
-    await flushPromises();
-
-    const status = document.getElementById("status");
-    expect(status.hidden).toBe(false);
-    expect(status.className).toContain("error");
-    expect(status.textContent).toBe("Access denied");
+    await renderApp();
+    fireEvent.click(screen.getByText("Update Apollo"));
+    await screen.findByText("Access denied");
   });
 
   test("disables buttons while sync is in progress", async () => {
@@ -89,27 +66,30 @@ describe("renderer sunshine sync", () => {
         resolveUpdate = resolve;
       })
     );
+    await renderApp();
+    fireEvent.click(screen.getByText("Update Apollo"));
 
-    document.getElementById("btn-update").click();
-    await flushPromises();
+    await waitFor(() => {
+      expect(screen.getByText("Refresh")).toBeDisabled();
+      expect(screen.getByText("Update Apollo")).toBeDisabled();
+    });
 
-    expect(document.getElementById("btn-refresh").disabled).toBe(true);
-    expect(document.getElementById("btn-update").disabled).toBe(true);
+    act(() => resolveUpdate({ status: "ok", count: 2 }));
 
-    resolveUpdate({ status: "ok", count: 2 });
-    await flushPromises();
-
-    expect(document.getElementById("btn-refresh").disabled).toBe(false);
-    expect(document.getElementById("btn-update").disabled).toBe(false);
+    await waitFor(() => {
+      expect(screen.getByText("Refresh")).not.toBeDisabled();
+      expect(screen.getByText("Update Apollo")).not.toBeDisabled();
+    });
   });
 
   test("re-enables buttons after sync failure", async () => {
     window.api.updateConfig.mockRejectedValue(new Error("oops"));
+    await renderApp();
+    fireEvent.click(screen.getByText("Update Apollo"));
 
-    document.getElementById("btn-update").click();
-    await flushPromises();
-
-    expect(document.getElementById("btn-refresh").disabled).toBe(false);
-    expect(document.getElementById("btn-update").disabled).toBe(false);
+    await waitFor(() => {
+      expect(screen.getByText("Refresh")).not.toBeDisabled();
+      expect(screen.getByText("Update Apollo")).not.toBeDisabled();
+    });
   });
 });
