@@ -1,9 +1,33 @@
 import { useState, useEffect, useCallback } from "react";
 import ReactDOM from "react-dom/client";
 
+interface Game {
+  app_id: number;
+  name: string;
+  thumbnail: string;
+}
+
+interface ConfigApp {
+  app_id: number;
+  name: string;
+}
+
+interface Status {
+  msg: string;
+  type: "loading" | "error" | "success";
+}
+
+interface GameCardProps {
+  game: Game;
+  checked: boolean;
+  onToggle: () => void;
+  willAdd: boolean;
+  willRemove: boolean;
+}
+
 const UNCHECKED_KEY = "uncheckedGames";
 
-function loadUnchecked() {
+function loadUnchecked(): Set<number> {
   try {
     return new Set(JSON.parse(localStorage.getItem(UNCHECKED_KEY) || "[]"));
   } catch {
@@ -11,23 +35,23 @@ function loadUnchecked() {
   }
 }
 
-function saveUnchecked(unchecked) {
+function saveUnchecked(unchecked: Set<number>): void {
   localStorage.setItem(UNCHECKED_KEY, JSON.stringify([...unchecked]));
 }
 
-async function apiGetGames(count) {
+async function apiGetGames(count: number): Promise<Game[]> {
   const res = await fetch(`/api/games?count=${count}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  return res.json() as Promise<Game[]>;
 }
 
-async function apiGetConfig() {
+async function apiGetConfig(): Promise<ConfigApp[]> {
   const res = await fetch("/api/config");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  return res.json() as Promise<ConfigApp[]>;
 }
 
-async function apiUpdateConfig(appIds) {
+async function apiUpdateConfig(appIds: number[]): Promise<{ status: string; count: number }> {
   const res = await fetch("/api/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -35,10 +59,10 @@ async function apiUpdateConfig(appIds) {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
+  return data as { status: string; count: number };
 }
 
-function GameCard({ game, checked, onToggle, willAdd, willRemove }) {
+function GameCard({ game, checked, onToggle, willAdd, willRemove }: GameCardProps) {
   let extra = "";
   if (willAdd) extra = " will-add";
   else if (willRemove) extra = " will-remove";
@@ -62,11 +86,11 @@ function GameCard({ game, checked, onToggle, willAdd, willRemove }) {
 }
 
 function App() {
-  const [games, setGames] = useState([]);
-  const [checkedIds, setCheckedIds] = useState(new Set());
-  const [configApps, setConfigApps] = useState([]);
+  const [games, setGames] = useState<Game[]>([]);
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
+  const [configApps, setConfigApps] = useState<ConfigApp[]>([]);
   const [count, setCount] = useState(10);
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
 
   const loadGames = useCallback(async () => {
@@ -77,7 +101,6 @@ function App() {
         apiGetGames(count),
         apiGetConfig(),
       ]);
-      if (result.error) throw new Error(result.error);
       const unchecked = loadUnchecked();
       const checked = new Set(
         result.filter((g) => !unchecked.has(g.app_id)).map((g) => g.app_id)
@@ -87,15 +110,15 @@ function App() {
       setConfigApps(currentConfig);
       setStatus(null);
     } catch (e) {
-      setStatus({ msg: e.message, type: "error" });
+      setStatus({ msg: (e as Error).message, type: "error" });
     } finally {
       setBusy(false);
     }
   }, [count]);
 
-  useEffect(() => { loadGames(); }, []);
+  useEffect(() => { loadGames(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function toggleGame(appId) {
+  function toggleGame(appId: number): void {
     setCheckedIds((prev) => {
       const next = new Set(prev);
       const unchecked = loadUnchecked();
@@ -111,7 +134,7 @@ function App() {
     });
   }
 
-  async function handleUpdate() {
+  async function handleUpdate(): Promise<void> {
     const appIds = [...checkedIds];
     if (appIds.length === 0) {
       setStatus({ msg: "No games selected.", type: "error" });
@@ -125,7 +148,7 @@ function App() {
       setConfigApps(updated);
       setStatus({ msg: `Apollo config updated with ${result.count} games.`, type: "success" });
     } catch (e) {
-      setStatus({ msg: e.message, type: "error" });
+      setStatus({ msg: (e as Error).message, type: "error" });
     } finally {
       setBusy(false);
     }

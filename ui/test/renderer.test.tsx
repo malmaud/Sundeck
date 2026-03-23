@@ -1,18 +1,25 @@
 /**
  * @jest-environment jsdom
  */
-"use strict";
 
-const { render, screen, fireEvent, waitFor, act } = require("@testing-library/react");
-const { App } = require("../renderer");
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { App } from "../renderer";
 
-const GAMES = [
+interface Game {
+  app_id: number;
+  name: string;
+  thumbnail: string;
+}
+
+const GAMES: Game[] = [
   { app_id: 100, name: "Half-Life", thumbnail: "" },
   { app_id: 200, name: "Portal", thumbnail: "" },
 ];
 
-function mockFetch(handlers) {
-  global.fetch = jest.fn((url, opts) => {
+type FetchHandler = () => { status?: number; body: unknown };
+
+function mockFetch(handlers: Record<string, FetchHandler>): void {
+  (global as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
     const method = (opts && opts.method) || "GET";
     const key = `${method} ${url.replace(/\?.*$/, "")}`;
     const handler = handlers[key];
@@ -35,7 +42,7 @@ beforeEach(() => {
   });
 });
 
-async function renderApp() {
+async function renderApp(): Promise<void> {
   render(<App />);
   await screen.findByText("Half-Life");
 }
@@ -45,11 +52,12 @@ describe("renderer sunshine sync", () => {
     await renderApp();
     fireEvent.click(screen.getByText("Update Apollo"));
     await waitFor(() => {
-      const postCall = global.fetch.mock.calls.find(
-        ([url, opts]) => opts && opts.method === "POST"
+      const fetchMock = (global as any).fetch as jest.Mock;
+      const postCall = fetchMock.mock.calls.find(
+        ([, opts]: [string, RequestInit?]) => opts && opts.method === "POST"
       );
       expect(postCall).toBeTruthy();
-      const body = JSON.parse(postCall[1].body);
+      const body = JSON.parse(postCall[1].body as string);
       expect(body.app_ids).toEqual(expect.arrayContaining([100, 200]));
     });
   });
@@ -63,14 +71,14 @@ describe("renderer sunshine sync", () => {
   test("shows error status when no games are selected", async () => {
     await renderApp();
     screen.getAllByRole("checkbox").forEach((cb) => {
-      if (cb.checked) fireEvent.click(cb);
+      if ((cb as HTMLInputElement).checked) fireEvent.click(cb);
     });
     fireEvent.click(screen.getByText("Update Apollo"));
     await screen.findByText(/No games selected/);
   });
 
   test("shows error status when sync fails", async () => {
-    global.fetch = jest.fn((url, opts) => {
+    (global as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
       const method = (opts && opts.method) || "GET";
       if (method === "POST") {
         return Promise.resolve({
@@ -91,8 +99,8 @@ describe("renderer sunshine sync", () => {
   });
 
   test("disables buttons while sync is in progress", async () => {
-    let resolvePost;
-    global.fetch = jest.fn((url, opts) => {
+    let resolvePost: () => void;
+    (global as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
       const method = (opts && opts.method) || "GET";
       if (method === "POST") {
         return new Promise((resolve) => {
@@ -127,7 +135,7 @@ describe("renderer sunshine sync", () => {
   });
 
   test("re-enables buttons after sync failure", async () => {
-    global.fetch = jest.fn((url, opts) => {
+    (global as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
       const method = (opts && opts.method) || "GET";
       if (method === "POST") {
         return Promise.resolve({
