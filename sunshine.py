@@ -20,6 +20,7 @@ class SunshineApp(BaseModel):
     name: str = ""
     cmd: str = ""
     image_path: str = Field(default="", alias="image-path")
+    wait_all: bool = Field(default=True, alias="wait-all")
 
 
 class SunshineConfig(BaseModel):
@@ -46,11 +47,12 @@ def build_sunshine_config(
                 "name": game.name,
                 "cmd": f"{uv} run --directory {launch_script.parent} {launch_script} --app_id={game.app_id}",
                 "image-path": game.thumbnail,
+                "wait-all": False,
             }
         )
         for game in games
     ]
-    return SunshineConfig(apps=kept + new_apps)
+    return SunshineConfig(apps=new_apps + kept)
 
 
 def load_sunshine_config(
@@ -75,11 +77,14 @@ def save_sunshine_config(
 def update_sunshine_config(
     config_path: Path = _SUNSHINE_CONFIG_DEFAULT,
     launch_script: Path = _LAUNCH_SCRIPT_DEFAULT,
-    restart_sunshine: bool = False,
+    restart_sunshine: bool = True,
+    count: int = 10,
 ) -> None:
     """Sync the Sunshine apps.json on disk with the most recently played Steam games."""
-    games = get_recent_games()
-    config = build_sunshine_config(load_sunshine_config(config_path), games, launch_script)
+    games = get_recent_games(count)
+    config = build_sunshine_config(
+        load_sunshine_config(config_path), games, launch_script
+    )
     save_sunshine_config(config, config_path)
     if restart_sunshine:
         restart_streaming_service()
