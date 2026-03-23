@@ -99,6 +99,8 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
 
     results.sort(reverse=True)
     top = results[:count]
+    if not top:
+        return []
     with ThreadPoolExecutor(max_workers=min(len(top), 10)) as executor:
         thumbnails = list(executor.map(lambda r: _get_thumbnail(r[1]), top))
     return [

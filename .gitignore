@@ -1,5 +1,7 @@
 .venv
 __pycache__
 thumbnails/
+launchers/
 *.ipynb
 .ipynb_checkpoints/
+ui/node_modules/

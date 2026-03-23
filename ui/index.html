@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:"
+    />
+    <title>SteamLaunch</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>SteamLaunch</h1>
+      <div class="controls">
+        <label>
+          Games:
+          <input type="number" id="count" value="10" min="1" max="50" />
+        </label>
+        <button id="btn-refresh">Refresh</button>
+        <button id="btn-update">Update Apollo</button>
+      </div>
+    </header>
+    <main>
+      <div id="status" class="status" hidden></div>
+      <div id="games" class="game-grid"></div>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>

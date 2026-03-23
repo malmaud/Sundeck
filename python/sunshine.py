@@ -9,8 +9,8 @@ from steam import SteamGame, get_recent_games
 
 
 _SUNSHINE_CONFIG_DEFAULT = Path(r"C:\Program Files\Apollo\config\apps.json")
-_SUNSHINE_CMD_MARKER = "launch.py"
-_LAUNCH_SCRIPT_DEFAULT = Path(__file__).parent / "launch.py"
+_SUNSHINE_CMD_MARKERS = ["launch.py", "cli.py launch"]
+_CLI_SCRIPT_DEFAULT = Path(__file__).parent / "cli.py"
 _KNOWN_STREAMING_SERVICES = ["SunshineService", "ApolloService"]
 
 
@@ -32,20 +32,20 @@ class SunshineConfig(BaseModel):
 def build_sunshine_config(
     existing: SunshineConfig,
     games: list[SteamGame],
-    launch_script: Path = _LAUNCH_SCRIPT_DEFAULT,
+    cli_script: Path = _CLI_SCRIPT_DEFAULT,
 ) -> SunshineConfig:
     """Return a new SunshineConfig with recent Steam games merged in.
 
-    Entries previously written by this function (identified by _SUNSHINE_CMD_MARKER
+    Entries previously written by this function (identified by _SUNSHINE_CMD_MARKERS
     in their 'cmd') are replaced; all other entries are preserved.
     """
     uv = shutil.which("uv") or "uv"
-    kept = [a for a in existing.apps if _SUNSHINE_CMD_MARKER not in a.cmd]
+    kept = [a for a in existing.apps if not any(m in a.cmd for m in _SUNSHINE_CMD_MARKERS)]
     new_apps = [
         SunshineApp.model_validate(
             {
                 "name": game.name,
-                "cmd": f"{uv} run --directory {launch_script.parent} {launch_script} --app_id={game.app_id}",
+                "cmd": f"{uv} run --directory {cli_script.parent} cli.py launch --app_id={game.app_id}",
                 "image-path": game.thumbnail,
                 "wait-all": False,
             }
@@ -76,14 +76,14 @@ def save_sunshine_config(
 
 def update_sunshine_config(
     config_path: Path = _SUNSHINE_CONFIG_DEFAULT,
-    launch_script: Path = _LAUNCH_SCRIPT_DEFAULT,
+    cli_script: Path = _CLI_SCRIPT_DEFAULT,
     restart_sunshine: bool = True,
     count: int = 10,
 ) -> None:
     """Sync the Sunshine apps.json on disk with the most recently played Steam games."""
     games = get_recent_games(count)
     config = build_sunshine_config(
-        load_sunshine_config(config_path), games, launch_script
+        load_sunshine_config(config_path), games, cli_script
     )
     save_sunshine_config(config, config_path)
     if restart_sunshine:
