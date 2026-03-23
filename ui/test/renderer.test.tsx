@@ -19,7 +19,7 @@ const GAMES: Game[] = [
 type FetchHandler = () => { status?: number; body: unknown };
 
 function mockFetch(handlers: Record<string, FetchHandler>): void {
-  (global as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
+  (globalThis as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
     const method = (opts && opts.method) || "GET";
     const key = `${method} ${url.replace(/\?.*$/, "")}`;
     const handler = handlers[key];
@@ -52,7 +52,7 @@ describe("renderer sunshine sync", () => {
     await renderApp();
     fireEvent.click(screen.getByText("Update Apollo"));
     await waitFor(() => {
-      const fetchMock = (global as any).fetch as jest.Mock;
+      const fetchMock = (globalThis as any).fetch as jest.Mock;
       const postCall = fetchMock.mock.calls.find(
         ([, opts]: [string, RequestInit?]) => opts && opts.method === "POST"
       );
@@ -78,7 +78,7 @@ describe("renderer sunshine sync", () => {
   });
 
   test("shows error status when sync fails", async () => {
-    (global as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
+    (globalThis as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
       const method = (opts && opts.method) || "GET";
       if (method === "POST") {
         return Promise.resolve({
@@ -100,7 +100,7 @@ describe("renderer sunshine sync", () => {
 
   test("disables buttons while sync is in progress", async () => {
     let resolvePost: () => void;
-    (global as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
+    (globalThis as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
       const method = (opts && opts.method) || "GET";
       if (method === "POST") {
         return new Promise((resolve) => {
@@ -135,7 +135,7 @@ describe("renderer sunshine sync", () => {
   });
 
   test("re-enables buttons after sync failure", async () => {
-    (global as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
+    (globalThis as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
       const method = (opts && opts.method) || "GET";
       if (method === "POST") {
         return Promise.resolve({
