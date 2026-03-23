@@ -15,6 +15,29 @@ function saveUnchecked(unchecked) {
   localStorage.setItem(UNCHECKED_KEY, JSON.stringify([...unchecked]));
 }
 
+async function apiGetGames(count) {
+  const res = await fetch(`/api/games?count=${count}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function apiGetConfig() {
+  const res = await fetch("/api/config");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function apiUpdateConfig(appIds) {
+  const res = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ app_ids: appIds }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
 function GameCard({ game, checked, onToggle, willAdd, willRemove }) {
   let extra = "";
   if (willAdd) extra = " will-add";
@@ -28,7 +51,7 @@ function GameCard({ game, checked, onToggle, willAdd, willRemove }) {
         onChange={onToggle}
       />
       {game.thumbnail && (
-        <img src={`file:///${game.thumbnail.replace(/\\/g, "/")}`} alt={game.name} />
+        <img src={game.thumbnail} alt={game.name} />
       )}
       <div className="game-name" title={game.name}>{game.name}</div>
       <div className="game-id">App ID: {game.app_id}</div>
@@ -51,8 +74,8 @@ function App() {
     setStatus({ msg: "Loading games...", type: "loading" });
     try {
       const [result, currentConfig] = await Promise.all([
-        window.api.getGames(count),
-        window.api.getCurrentConfig(),
+        apiGetGames(count),
+        apiGetConfig(),
       ]);
       if (result.error) throw new Error(result.error);
       const unchecked = loadUnchecked();
@@ -97,9 +120,8 @@ function App() {
     setBusy(true);
     setStatus({ msg: "Updating Apollo config...", type: "loading" });
     try {
-      const result = await window.api.updateConfig(appIds);
-      if (result.error) throw new Error(result.error);
-      const updated = await window.api.getCurrentConfig();
+      const result = await apiUpdateConfig(appIds);
+      const updated = await apiGetConfig();
       setConfigApps(updated);
       setStatus({ msg: `Apollo config updated with ${result.count} games.`, type: "success" });
     } catch (e) {

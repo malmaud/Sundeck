@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -63,6 +64,20 @@ def load_sunshine_config(
             json.loads(config_path.read_text(encoding="utf-8"))
         )
     return SunshineConfig()
+
+
+def get_managed_apps(
+    config_path: Path = _SUNSHINE_CONFIG_DEFAULT,
+) -> list[dict]:
+    """Return app_id/name dicts for apps managed by this tool."""
+    config = load_sunshine_config(config_path)
+    result = []
+    for a in config.apps:
+        if any(m in a.cmd for m in _SUNSHINE_CMD_MARKERS):
+            m = re.search(r"--app_id=(\d+)", a.cmd)
+            if m:
+                result.append({"app_id": int(m.group(1)), "name": a.name})
+    return result
 
 
 def save_sunshine_config(

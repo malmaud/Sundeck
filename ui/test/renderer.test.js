@@ -11,13 +11,28 @@ const GAMES = [
   { app_id: 200, name: "Portal", thumbnail: "" },
 ];
 
+function mockFetch(handlers) {
+  global.fetch = jest.fn((url, opts) => {
+    const method = (opts && opts.method) || "GET";
+    const key = `${method} ${url.replace(/\?.*$/, "")}`;
+    const handler = handlers[key];
+    if (!handler) return Promise.reject(new Error(`Unexpected fetch: ${method} ${url}`));
+    const { status = 200, body } = handler();
+    return Promise.resolve({
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(body),
+    });
+  });
+}
+
 beforeEach(() => {
   localStorage.clear();
-  window.api = {
-    getGames: jest.fn().mockResolvedValue(GAMES),
-    updateConfig: jest.fn().mockResolvedValue({ status: "ok", count: 2 }),
-    getCurrentConfig: jest.fn().mockResolvedValue([]),
-  };
+  mockFetch({
+    "GET /api/games": () => ({ body: GAMES }),
+    "GET /api/config": () => ({ body: [] }),
+    "POST /api/config": () => ({ body: { status: "ok", count: 2 } }),
+  });
 });
 
 async function renderApp() {
@@ -26,14 +41,16 @@ async function renderApp() {
 }
 
 describe("renderer sunshine sync", () => {
-  test("calls updateConfig with all loaded game IDs on update", async () => {
+  test("calls POST /api/config with all loaded game IDs on update", async () => {
     await renderApp();
     fireEvent.click(screen.getByText("Update Apollo"));
     await waitFor(() => {
-      expect(window.api.updateConfig).toHaveBeenCalledTimes(1);
-      expect(window.api.updateConfig).toHaveBeenCalledWith(
-        expect.arrayContaining([100, 200])
+      const postCall = global.fetch.mock.calls.find(
+        ([url, opts]) => opts && opts.method === "POST"
       );
+      expect(postCall).toBeTruthy();
+      const body = JSON.parse(postCall[1].body);
+      expect(body.app_ids).toEqual(expect.arrayContaining([100, 200]));
     });
   });
 
@@ -53,19 +70,46 @@ describe("renderer sunshine sync", () => {
   });
 
   test("shows error status when sync fails", async () => {
-    window.api.updateConfig.mockRejectedValue(new Error("Access denied"));
+    global.fetch = jest.fn((url, opts) => {
+      const method = (opts && opts.method) || "GET";
+      if (method === "POST") {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: "Access denied" }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(method === "GET" && url.includes("/api/games") ? GAMES : []),
+      });
+    });
     await renderApp();
     fireEvent.click(screen.getByText("Update Apollo"));
     await screen.findByText("Access denied");
   });
 
   test("disables buttons while sync is in progress", async () => {
-    let resolveUpdate;
-    window.api.updateConfig.mockReturnValue(
-      new Promise((resolve) => {
-        resolveUpdate = resolve;
-      })
-    );
+    let resolvePost;
+    global.fetch = jest.fn((url, opts) => {
+      const method = (opts && opts.method) || "GET";
+      if (method === "POST") {
+        return new Promise((resolve) => {
+          resolvePost = () =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve({ status: "ok", count: 2 }),
+            });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(url.includes("/api/games") ? GAMES : []),
+      });
+    });
     await renderApp();
     fireEvent.click(screen.getByText("Update Apollo"));
 
@@ -74,7 +118,7 @@ describe("renderer sunshine sync", () => {
       expect(screen.getByText("Update Apollo")).toBeDisabled();
     });
 
-    act(() => resolveUpdate({ status: "ok", count: 2 }));
+    act(() => resolvePost());
 
     await waitFor(() => {
       expect(screen.getByText("Refresh")).not.toBeDisabled();
@@ -83,7 +127,21 @@ describe("renderer sunshine sync", () => {
   });
 
   test("re-enables buttons after sync failure", async () => {
-    window.api.updateConfig.mockRejectedValue(new Error("oops"));
+    global.fetch = jest.fn((url, opts) => {
+      const method = (opts && opts.method) || "GET";
+      if (method === "POST") {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: "oops" }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(url.includes("/api/games") ? GAMES : []),
+      });
+    });
     await renderApp();
     fireEvent.click(screen.getByText("Update Apollo"));
 
