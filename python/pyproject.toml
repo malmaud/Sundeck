@@ -11,3 +11,8 @@ dependencies = [
     "pydantic>=2.12.5",
     "rich>=14.3.3",
 ]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.0",
+]

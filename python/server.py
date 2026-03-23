@@ -6,6 +6,7 @@ Then open:  http://localhost:5000
 import base64
 import os
 import subprocess
+import sys
 import tempfile
 import webbrowser
 from pathlib import Path
@@ -16,8 +17,14 @@ from steam import get_recent_games
 from sunshine import build_sunshine_config, get_managed_apps, load_sunshine_config
 
 _PYTHON_DIR = Path(__file__).parent
-_UI_DIR = _PYTHON_DIR.parent / "ui"
-_THUMBNAIL_DIR = _PYTHON_DIR / "thumbnails"
+if getattr(sys, "frozen", False):
+    # Running as a PyInstaller bundle; data files are under sys._MEIPASS,
+    # but thumbnails must be writable so store them next to the executable.
+    _UI_DIR = Path(sys._MEIPASS) / "ui"  # type: ignore[attr-defined]
+    _THUMBNAIL_DIR = Path(sys.executable).parent / "thumbnails"
+else:
+    _UI_DIR = _PYTHON_DIR.parent / "ui"
+    _THUMBNAIL_DIR = _PYTHON_DIR / "thumbnails"
 _APOLLO_CONFIG = Path(
     os.environ.get("APOLLO_CONFIG", r"C:\Program Files\Apollo\config\apps.json")
 )

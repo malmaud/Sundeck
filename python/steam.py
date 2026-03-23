@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -23,7 +24,11 @@ class SteamGame:
 _STEAM_HEADER_URL = (
     "https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/library_600x900.jpg"
 )
-_THUMBNAIL_CACHE_DIR = Path(__file__).parent / "thumbnails"
+_THUMBNAIL_CACHE_DIR = (
+    Path(sys.executable).parent / "thumbnails"
+    if getattr(sys, "frozen", False)
+    else Path(__file__).parent / "thumbnails"
+)
 
 
 def get_recent_games(count: int = 10) -> list[SteamGame]:
