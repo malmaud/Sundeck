@@ -64,7 +64,7 @@ def _fetch_name_from_steam(app_id: str) -> str | None:
     return None
 
 
-def get_recent_games(count: int = 10) -> list[SteamGame]:
+def get_recent_games(count: int = 10, only_ids: set[int] | None = None) -> list[SteamGame]:
     """Return the most recently played Steam games from localconfig.vdf."""
     steam_root = (
         Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Steam"
@@ -88,7 +88,7 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
                     with winreg.OpenKey(apps_key, subkey_name) as app_key:
                         try:
                             name, _ = winreg.QueryValueEx(app_key, "Name")
-                            names[subkey_name] = name
+                            names[subkey_name] = str(name)
                         except OSError:
                             pass
                 except OSError:
@@ -97,18 +97,19 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
         pass
 
     # Parse LastPlayed timestamps and names from localconfig.vdf
-    results = []
+    results: list[tuple[int, int, str]] = []
     in_apps = False
     current_app_id = None
     current_last_played = 0
     current_vdf_name: str | None = None
     depth = 0
-    apps_depth = None
+    apps_depth = -1
 
     def _flush():
         if current_app_id and current_last_played:
-            name = current_vdf_name or names.get(current_app_id, current_app_id)
-            results.append((current_last_played, int(current_app_id), name))
+            aid = current_app_id
+            name = current_vdf_name or names.get(aid, aid)
+            results.append((current_last_played, int(aid), name))
 
     with open(vdf_path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -151,6 +152,8 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
                         current_vdf_name = m.group(1)
 
     results.sort(reverse=True)
+    if only_ids is not None:
+        results = [r for r in results if r[1] in only_ids]
     top = results[:count]
     if not top:
         return []

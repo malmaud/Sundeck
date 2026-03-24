@@ -168,7 +168,7 @@ def api_update_config() -> Response | tuple[Response, int]:
         return jsonify({"error": "No app IDs provided"}), 400
 
     ids = set(app_ids)
-    games = [g for g in get_recent_games(len(ids)) if g.app_id in ids]
+    games = get_recent_games(len(ids), only_ids=ids)
     order = {aid: i for i, aid in enumerate(app_ids)}
     games.sort(key=lambda g: order.get(g.app_id, 0))
 
@@ -270,9 +270,10 @@ def _check_port(port: int) -> None:
 def _main(_argv):
     del _argv
     port = flags.FLAGS.port
-    _check_port(port)
-    webbrowser.open(f"http://localhost:{port}")
-    app.run(port=port, debug=False)
+    if not os.environ.get("WERKZEUG_RUN_MAIN"):
+        _check_port(port)
+        webbrowser.open(f"http://localhost:{port}")
+    app.run(port=port, debug=True)
 
 
 if __name__ == "__main__":
