@@ -84,6 +84,7 @@ def api_games() -> Response:
             "app_id": g.app_id,
             "name": g.name,
             "thumbnail": f"/thumbnails/{Path(g.thumbnail).name}" if g.thumbnail else "",
+            "last_played": g.last_played,
         }
         for g in games
     ])

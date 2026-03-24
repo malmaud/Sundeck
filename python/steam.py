@@ -19,6 +19,7 @@ class SteamGame:
     app_id: int
     name: str
     thumbnail: str
+    last_played: int = 0
 
 
 _STEAM_HEADER_URL = (
@@ -109,8 +110,8 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
     with ThreadPoolExecutor(max_workers=min(len(top), 10)) as executor:
         thumbnails = list(executor.map(lambda r: _get_thumbnail(r[1]), top))
     return [
-        SteamGame(app_id=app_id, name=name, thumbnail=thumbnail)
-        for (_, app_id, name), thumbnail in zip(top, thumbnails)
+        SteamGame(app_id=app_id, name=name, thumbnail=thumbnail, last_played=last_played)
+        for (last_played, app_id, name), thumbnail in zip(top, thumbnails)
     ]
 
 

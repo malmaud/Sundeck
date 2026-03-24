@@ -5,6 +5,7 @@ interface Game {
   app_id: number;
   name: string;
   thumbnail: string;
+  last_played: number;
 }
 
 interface ConfigApp {
@@ -28,6 +29,7 @@ interface GameCardProps {
   onToggle: () => void;
   willAdd: boolean;
   willRemove: boolean;
+  showDebug: boolean;
 }
 
 const UNCHECKED_KEY = "uncheckedGames";
@@ -83,7 +85,7 @@ async function apiUpdateConfig(appIds: number[]): Promise<{ status: string; coun
   return data as { status: string; count: number };
 }
 
-function GameCard({ game, checked, onToggle, willAdd, willRemove }: GameCardProps) {
+function GameCard({ game, checked, onToggle, willAdd, willRemove, showDebug }: GameCardProps) {
   let extra = "";
   if (willAdd) extra = " will-add";
   else if (willRemove) extra = " will-remove";
@@ -99,7 +101,12 @@ function GameCard({ game, checked, onToggle, willAdd, willRemove }: GameCardProp
         <img src={game.thumbnail} alt={game.name} />
       )}
       <div className="game-name" title={game.name}>{game.name}</div>
-      <div className="game-id">App ID: {game.app_id}</div>
+      {showDebug && <div className="game-id">App ID: {game.app_id}</div>}
+      {game.last_played > 0 && (
+        <div className="game-last-played">
+          {new Date(game.last_played * 1000).toLocaleDateString()}
+        </div>
+      )}
       {willAdd && <div className="diff-badge add">+ add</div>}
       {willRemove && <div className="diff-badge remove">− remove</div>}
     </div>
@@ -116,6 +123,9 @@ function App() {
   const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [] });
   const [configPathInput, setConfigPathInput] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showDebug, setShowDebug] = useState(() =>
+    localStorage.getItem("showDebug") === "true"
+  );
 
   const loadGames = useCallback(async () => {
     setBusy(true);
@@ -240,6 +250,17 @@ function App() {
                 {settings.suggestions.map((s) => <option key={s} value={s} />)}
               </datalist>
             </label>
+            <label className="debug-toggle">
+              <input
+                type="checkbox"
+                checked={showDebug}
+                onChange={(e) => {
+                  setShowDebug(e.target.checked);
+                  localStorage.setItem("showDebug", String(e.target.checked));
+                }}
+              />
+              Show debug information
+            </label>
             <button className="btn-primary" onClick={handleSaveSettings} disabled={busy}>Save</button>
           </div>
         )}
@@ -257,6 +278,7 @@ function App() {
               onToggle={() => toggleGame(game.app_id)}
               willAdd={checkedIds.has(game.app_id) && !configIdSet.has(game.app_id)}
               willRemove={!checkedIds.has(game.app_id) && configIdSet.has(game.app_id)}
+              showDebug={showDebug}
             />
           ))}
         </div>
