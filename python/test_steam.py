@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 from steam import get_recent_games, launch_game, wait_for_game
 
 
@@ -32,15 +34,21 @@ VDF_CONTENT = """\
 """
 
 
-def _run_get_recent_games(vdf_content, count=10):
+def _run_get_recent_games(vdf_content, count=10, steam_api_names=None):
     """Execute get_recent_games with a fake Steam install tree and no network calls."""
+    def fake_fetch_name(app_id):
+        return (steam_api_names or {}).get(app_id)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         vdf_dir = Path(tmpdir) / "Steam" / "userdata" / "12345" / "config"
         vdf_dir.mkdir(parents=True)
         (vdf_dir / "localconfig.vdf").write_text(vdf_content, encoding="utf-8")
         with patch.dict(os.environ, {"ProgramFiles(x86)": tmpdir}), \
              patch("steam.winreg.OpenKey", side_effect=OSError), \
-             patch("steam._get_thumbnail", return_value=""):
+             patch("steam._get_thumbnail", return_value=""), \
+             patch("steam._load_name_cache", return_value={}), \
+             patch("steam._save_name_cache"), \
+             patch("steam._fetch_name_from_steam", side_effect=fake_fetch_name):
             return get_recent_games(count)
 
 
@@ -127,27 +135,31 @@ class TestGetRecentGames(unittest.TestCase):
         self.assertEqual(games, [])
 
     def test_returns_games_sorted_by_recency(self):
-        games = _run_get_recent_games(VDF_CONTENT)
+        games = _run_get_recent_games(VDF_CONTENT, steam_api_names={"440": "TF2", "730": "CS2"})
         self.assertEqual(games[0].app_id, 440)
         self.assertEqual(games[1].app_id, 730)
 
     def test_skips_entries_with_zero_last_played(self):
-        games = _run_get_recent_games(VDF_CONTENT)
+        games = _run_get_recent_games(VDF_CONTENT, steam_api_names={"440": "TF2", "730": "CS2", "100": "Game"})
         self.assertNotIn(100, {g.app_id for g in games})
 
     def test_respects_count_limit(self):
-        games = _run_get_recent_games(VDF_CONTENT, count=1)
+        games = _run_get_recent_games(VDF_CONTENT, count=1, steam_api_names={"440": "TF2", "730": "CS2"})
         self.assertEqual(len(games), 1)
         self.assertEqual(games[0].app_id, 440)
 
-    def test_falls_back_to_app_id_string_when_registry_unavailable(self):
+    def test_uses_steam_api_name_when_registry_unavailable(self):
+        games = _run_get_recent_games(VDF_CONTENT, steam_api_names={"440": "Team Fortress 2", "730": "Counter-Strike 2"})
+        self.assertEqual(games[0].name, "Team Fortress 2")
+
+    def test_excludes_game_when_no_name_source_available(self):
+        # No VDF name, no registry, no Steam API → excluded
         games = _run_get_recent_games(VDF_CONTENT)
-        # With registry mocked to OSError, name is the raw app_id string
-        self.assertEqual(games[0].name, "440")
+        self.assertEqual(games, [])
 
     def test_returns_steam_game_objects(self):
         from steam import SteamGame
-        games = _run_get_recent_games(VDF_CONTENT)
+        games = _run_get_recent_games(VDF_CONTENT, steam_api_names={"440": "TF2", "730": "CS2"})
         for g in games:
             self.assertIsInstance(g, SteamGame)
             self.assertIsInstance(g.app_id, int)
@@ -164,9 +176,136 @@ class TestGetRecentGames(unittest.TestCase):
             (vdf_dir / "localconfig.vdf").write_text(VDF_CONTENT, encoding="utf-8")
             with patch.dict(os.environ, {"ProgramFiles(x86)": tmpdir}), \
                  patch("steam.winreg.OpenKey", side_effect=OSError), \
-                 patch("steam._get_thumbnail", return_value="/cache/440.png"):
+                 patch("steam._get_thumbnail", return_value="/cache/440.png"), \
+                 patch("steam._load_name_cache", return_value={}), \
+                 patch("steam._save_name_cache"), \
+                 patch("steam._fetch_name_from_steam", return_value="Team Fortress 2"):
                 games = get_recent_games(1)
         self.assertEqual(games[0].thumbnail, "/cache/440.png")
+
+
+# ---------------------------------------------------------------------------
+# Regression: apps without LastPlayed must not cause subsequent apps to be
+# skipped (parser bug where current_app_id was not cleared on block exit).
+# ---------------------------------------------------------------------------
+
+# App 999 has no LastPlayed key at all; 440 and 730 come after it.
+# Before the fix, the parser would get stuck on 999 and miss 440 and 730.
+VDF_NO_LAST_PLAYED_FIRST = """\
+"UserLocalConfigStore"
+{
+\t"apps"
+\t{
+\t\t"999"
+\t\t{
+\t\t\t"SomeOtherKey"\t\t"whatever"
+\t\t}
+\t\t"440"
+\t\t{
+\t\t\t"LastPlayed"\t\t"1700000002"
+\t\t}
+\t\t"730"
+\t\t{
+\t\t\t"LastPlayed"\t\t"1700000001"
+\t\t}
+\t}
+}
+"""
+
+
+VDF_WITH_NAMES = """\
+"UserLocalConfigStore"
+{
+\t"apps"
+\t{
+\t\t"440"
+\t\t{
+\t\t\t"name"\t\t"Team Fortress 2"
+\t\t\t"LastPlayed"\t\t"1700000002"
+\t\t}
+\t\t"730"
+\t\t{
+\t\t\t"LastPlayed"\t\t"1700000001"
+\t\t}
+\t}
+}
+"""
+
+
+class TestNameResolution(unittest.TestCase):
+    def test_vdf_name_used_when_present(self):
+        games = _run_get_recent_games(VDF_WITH_NAMES)
+        tf2 = next(g for g in games if g.app_id == 440)
+        self.assertEqual(tf2.name, "Team Fortress 2")
+
+    def test_game_excluded_when_name_cannot_be_resolved(self):
+        # App 730 has no VDF name, no registry, Steam API returns nothing → excluded
+        games = _run_get_recent_games(VDF_WITH_NAMES)
+        self.assertNotIn(730, {g.app_id for g in games})
+
+
+class TestParserRegressions(unittest.TestCase):
+    def test_apps_after_no_last_played_entry_are_not_skipped(self):
+        """Apps following one with no LastPlayed must still be returned."""
+        games = _run_get_recent_games(VDF_NO_LAST_PLAYED_FIRST,
+                                      steam_api_names={"440": "TF2", "730": "CS2"})
+        app_ids = {g.app_id for g in games}
+        self.assertIn(440, app_ids)
+        self.assertIn(730, app_ids)
+
+    def test_app_with_no_last_played_is_excluded(self):
+        """An app with no LastPlayed key should not appear in results."""
+        games = _run_get_recent_games(VDF_NO_LAST_PLAYED_FIRST,
+                                      steam_api_names={"440": "TF2", "730": "CS2"})
+        self.assertNotIn(999, {g.app_id for g in games})
+
+    def test_large_library_returns_all_played_games(self):
+        """Requesting more games than exist returns all played ones, not a truncated set."""
+        games = _run_get_recent_games(VDF_NO_LAST_PLAYED_FIRST, count=999,
+                                      steam_api_names={"440": "TF2", "730": "CS2"})
+        self.assertEqual(len(games), 2)
+
+
+# ---------------------------------------------------------------------------
+# Regression: CMYK JPEG thumbnails must be converted to RGB before saving as
+# PNG (Pillow cannot write CMYK mode as PNG).
+# ---------------------------------------------------------------------------
+
+
+class TestThumbnailCmykRegression(unittest.TestCase):
+    def test_cmyk_jpeg_is_saved_as_rgb_png(self):
+        """_get_thumbnail must not crash when the downloaded image is CMYK."""
+        import steam
+
+        def fake_urlretrieve(url, filename):
+            img = Image.new("CMYK", (10, 10), (0, 128, 200, 50))
+            img.save(filename, format="JPEG")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "thumbnails"
+            with patch.object(steam, "_THUMBNAIL_CACHE_DIR", cache_dir), \
+                 patch("steam.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+                result = steam._get_thumbnail(12345)
+                self.assertTrue(result, "Expected a non-empty path back")
+                with Image.open(result) as saved:
+                    self.assertIn(saved.mode, ("RGB", "RGBA"), "Saved PNG must not be CMYK")
+
+    def test_rgb_jpeg_still_works(self):
+        """Normal RGB thumbnails must continue to save correctly."""
+        import steam
+
+        def fake_urlretrieve(url, filename):
+            img = Image.new("RGB", (10, 10), (100, 150, 200))
+            img.save(filename, format="JPEG")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "thumbnails"
+            with patch.object(steam, "_THUMBNAIL_CACHE_DIR", cache_dir), \
+                 patch("steam.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+                result = steam._get_thumbnail(99999)
+                self.assertTrue(result)
+                with Image.open(result) as saved:
+                    self.assertEqual(saved.mode, "RGB")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -25,11 +26,42 @@ class SteamGame:
 _STEAM_HEADER_URL = (
     "https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/library_600x900.jpg"
 )
-_THUMBNAIL_CACHE_DIR = (
-    Path(sys.executable).parent / "thumbnails"
+_STEAM_APPDETAILS_URL = "https://store.steampowered.com/api/appdetails?appids={app_id}&filters=basic"
+_CACHE_BASE = (
+    Path(sys.executable).parent
     if getattr(sys, "frozen", False)
-    else Path(__file__).parent / "thumbnails"
+    else Path(__file__).parent
 )
+_THUMBNAIL_CACHE_DIR = _CACHE_BASE / "thumbnails"
+_NAME_CACHE_FILE = _CACHE_BASE / "name_cache.json"
+
+
+def _load_name_cache() -> dict[str, str]:
+    try:
+        return json.loads(_NAME_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_name_cache(cache: dict[str, str]) -> None:
+    try:
+        _NAME_CACHE_FILE.write_text(json.dumps(cache), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _fetch_name_from_steam(app_id: str) -> str | None:
+    """Fetch the name for a single app from the Steam store API."""
+    try:
+        url = _STEAM_APPDETAILS_URL.format(app_id=app_id)
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read())
+        entry = data.get(app_id, {})
+        if entry.get("success") and entry.get("data"):
+            return entry["data"].get("name")
+    except Exception:
+        pass
+    return None
 
 
 def get_recent_games(count: int = 10) -> list[SteamGame]:
@@ -42,8 +74,8 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
         return []
     vdf_path = max(paths, key=lambda p: p.stat().st_mtime)
 
-    # Collect names from registry (best-effort)
-    names: dict[str, str] = {}
+    # Collect names: persistent Steam API cache, then registry (both best-effort)
+    names: dict[str, str] = _load_name_cache()
     try:
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam\Apps"
@@ -64,12 +96,19 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
     except OSError:
         pass
 
-    # Parse LastPlayed timestamps from localconfig.vdf
+    # Parse LastPlayed timestamps and names from localconfig.vdf
     results = []
     in_apps = False
     current_app_id = None
+    current_last_played = 0
+    current_vdf_name: str | None = None
     depth = 0
     apps_depth = None
+
+    def _flush():
+        if current_app_id and current_last_played:
+            name = current_vdf_name or names.get(current_app_id, current_app_id)
+            results.append((current_last_played, int(current_app_id), name))
 
     with open(vdf_path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -88,8 +127,16 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
                 elif stripped == "}":
                     depth -= 1
                     if depth == apps_depth:
+                        _flush()
                         in_apps = False
                         current_app_id = None
+                        current_last_played = 0
+                        current_vdf_name = None
+                    elif depth == apps_depth + 1:
+                        _flush()
+                        current_app_id = None
+                        current_last_played = 0
+                        current_vdf_name = None
                 elif current_app_id is None:
                     m = re.match(r'^"(\d+)"$', stripped)
                     if m:
@@ -97,16 +144,41 @@ def get_recent_games(count: int = 10) -> list[SteamGame]:
                 else:
                     m = re.match(r'^"LastPlayed"\s+"(\d+)"$', stripped)
                     if m:
-                        last_played = int(m.group(1))
-                        if last_played:
-                            name = names.get(current_app_id, current_app_id)
-                            results.append((last_played, int(current_app_id), name))
-                        current_app_id = None
+                        current_last_played = int(m.group(1))
+                        continue
+                    m = re.match(r'^"name"\s+"(.+)"$', stripped)
+                    if m:
+                        current_vdf_name = m.group(1)
 
     results.sort(reverse=True)
     top = results[:count]
     if not top:
         return []
+
+    # Fetch names from Steam API for any game still identified only by its app_id string.
+    name_cache = names  # already loaded above
+    missing = [r for r in top if r[2] == str(r[1])]
+    if missing:
+        def _resolve_name(entry: tuple) -> None:
+            _, app_id, _ = entry
+            key = str(app_id)
+            if key not in name_cache:
+                fetched = _fetch_name_from_steam(key)
+                if fetched:
+                    name_cache[key] = fetched
+
+        with ThreadPoolExecutor(max_workers=min(len(missing), 10)) as executor:
+            list(executor.map(_resolve_name, missing))
+        _save_name_cache(name_cache)
+        top = [
+            (lp, app_id, name_cache.get(str(app_id), name))
+            for lp, app_id, name in top
+        ]
+
+    top = [(lp, app_id, name) for lp, app_id, name in top if name != str(app_id)]
+    if not top:
+        return []
+
     with ThreadPoolExecutor(max_workers=min(len(top), 10)) as executor:
         thumbnails = list(executor.map(lambda r: _get_thumbnail(r[1]), top))
     return [
@@ -124,7 +196,10 @@ def _get_thumbnail(app_id: int) -> str:
         try:
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 urllib.request.urlretrieve(url, tmp.name)
-                Image.open(tmp.name).save(path, format="PNG")
+                img = Image.open(tmp.name)
+                if img.mode not in ("RGB", "RGBA"):
+                    img = img.convert("RGB")
+                img.save(path, format="PNG")
         except urllib.error.HTTPError:
             return ""
     return str(path)

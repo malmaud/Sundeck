@@ -3,6 +3,7 @@
 Run with:  uv run server.py
 Then open:  http://localhost:5000
 """
+
 import base64
 import json
 import os
@@ -14,10 +15,13 @@ import tempfile
 import webbrowser
 from pathlib import Path
 
+from absl import app as absl_app, flags
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 from steam import get_recent_games
 from sunshine import build_sunshine_config, get_managed_apps, load_sunshine_config
+
+flags.DEFINE_integer("port", 5000, "Port to listen on.")
 
 _PYTHON_DIR = Path(__file__).parent
 if getattr(sys, "frozen", False):
@@ -62,6 +66,7 @@ def _save_config_path(path: Path) -> None:
     data["config_path"] = str(path)
     _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+
 app = Flask(__name__, static_folder=str(_UI_DIR), static_url_path="")
 
 
@@ -79,15 +84,19 @@ def thumbnails(filename: str) -> Response:
 def api_games() -> Response:
     count = request.args.get("count", 10, type=int)
     games = get_recent_games(count)
-    return jsonify([
-        {
-            "app_id": g.app_id,
-            "name": g.name,
-            "thumbnail": f"/thumbnails/{Path(g.thumbnail).name}" if g.thumbnail else "",
-            "last_played": g.last_played,
-        }
-        for g in games
-    ])
+    return jsonify(
+        [
+            {
+                "app_id": g.app_id,
+                "name": g.name,
+                "thumbnail": (
+                    f"/thumbnails/{Path(g.thumbnail).name}" if g.thumbnail else ""
+                ),
+                "last_played": g.last_played,
+            }
+            for g in games
+        ]
+    )
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -107,6 +116,42 @@ def api_update_settings() -> Response | tuple[Response, int]:
     return jsonify({"status": "ok", "config_path": config_path})
 
 
+@app.route("/api/restart", methods=["POST"])
+def api_restart() -> Response:
+    import threading
+    import time
+
+    def _restart():
+        time.sleep(0.3)
+        # Spawn a detached helper that waits for the port to free then relaunches.
+        script = (
+            "import time, subprocess; "
+            "time.sleep(1); "
+            f"subprocess.Popen({[sys.executable] + sys.argv!r})"
+        )
+        subprocess.Popen(
+            [sys.executable, "-c", script],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        os._exit(0)
+
+    threading.Thread(target=_restart).start()
+    return jsonify({"status": "restarting"})
+
+
+@app.route("/api/shutdown", methods=["POST"])
+def api_shutdown() -> Response:
+    import threading
+    import time
+
+    def _stop():
+        time.sleep(0.3)
+        os._exit(0)
+
+    threading.Thread(target=_stop).start()
+    return jsonify({"status": "shutting down"})
+
+
 @app.route("/api/config", methods=["GET"])
 def api_get_config() -> Response:
     try:
@@ -123,7 +168,7 @@ def api_update_config() -> Response | tuple[Response, int]:
         return jsonify({"error": "No app IDs provided"}), 400
 
     ids = set(app_ids)
-    games = [g for g in get_recent_games(50) if g.app_id in ids]
+    games = [g for g in get_recent_games(len(ids)) if g.app_id in ids]
     order = {aid: i for i, aid in enumerate(app_ids)}
     games.sort(key=lambda g: order.get(g.app_id, 0))
 
@@ -188,7 +233,9 @@ def _check_port(port: int) -> None:
     owner = f"(unknown process)"
     try:
         out = subprocess.check_output(
-            ["netstat", "-ano"], text=True, creationflags=0x08000000,  # CREATE_NO_WINDOW
+            ["netstat", "-ano"],
+            text=True,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
         )
         pattern = re.compile(rf":{port}\b")
         for line in out.splitlines():
@@ -197,7 +244,8 @@ def _check_port(port: int) -> None:
                 try:
                     tl = subprocess.check_output(
                         ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                        text=True, creationflags=0x08000000,
+                        text=True,
+                        creationflags=0x08000000,
                     )
                     name = tl.strip().split(",")[0].strip('"')
                     owner = f"{name} (PID {pid})"
@@ -209,7 +257,9 @@ def _check_port(port: int) -> None:
 
     # Extract numeric PID for the kill hint if we found one.
     pid_match = re.search(r"PID (\d+)", owner)
-    kill_hint = f"  Kill it with:  taskkill /PID {pid_match.group(1)} /F" if pid_match else ""
+    kill_hint = (
+        f"  Kill it with:  taskkill /PID {pid_match.group(1)} /F" if pid_match else ""
+    )
     print(
         f"ERROR: Port {port} is already in use by {owner}.{chr(10) + kill_hint if kill_hint else ''}",
         file=sys.stderr,
@@ -217,7 +267,13 @@ def _check_port(port: int) -> None:
     sys.exit(1)
 
 
+def _main(_argv):
+    del _argv
+    port = flags.FLAGS.port
+    _check_port(port)
+    webbrowser.open(f"http://localhost:{port}")
+    app.run(port=port, debug=False)
+
+
 if __name__ == "__main__":
-    _check_port(5000)
-    webbrowser.open("http://localhost:5000")
-    app.run(port=5000, debug=False)
+    absl_app.run(_main)

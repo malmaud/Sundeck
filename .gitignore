@@ -9,3 +9,4 @@ ui/renderer.bundle.js
 dist/
 build/
 python/settings.json
+python/name_cache.json

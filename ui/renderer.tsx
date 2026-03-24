@@ -97,18 +97,21 @@ function GameCard({ game, checked, onToggle, willAdd, willRemove, showDebug }: G
         checked={checked}
         onChange={onToggle}
       />
-      {game.thumbnail && (
-        <img src={game.thumbnail} alt={game.name} />
-      )}
-      <div className="game-name" title={game.name}>{game.name}</div>
+      {game.thumbnail
+        ? <img src={game.thumbnail} alt={game.name} />
+        : <div className="game-thumbnail-placeholder" aria-hidden="true" />
+      }
+      <div className="game-name-row">
+        <div className="game-name" title={game.name}>{game.name}</div>
+        {willAdd && <div className="diff-badge add">+ add</div>}
+        {willRemove && <div className="diff-badge remove">− remove</div>}
+      </div>
       {showDebug && <div className="game-id">App ID: {game.app_id}</div>}
       {game.last_played > 0 && (
         <div className="game-last-played">
           {new Date(game.last_played * 1000).toLocaleDateString()}
         </div>
       )}
-      {willAdd && <div className="diff-badge add">+ add</div>}
-      {willRemove && <div className="diff-badge remove">− remove</div>}
     </div>
   );
 }
@@ -118,6 +121,7 @@ function App() {
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
   const [configApps, setConfigApps] = useState<ConfigApp[]>([]);
   const [count, setCount] = useState(10);
+  const [countInput, setCountInput] = useState("10");
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [] });
@@ -127,12 +131,12 @@ function App() {
     localStorage.getItem("showDebug") === "true"
   );
 
-  const loadGames = useCallback(async () => {
+  const loadGames = useCallback(async (n = count) => {
     setBusy(true);
     setStatus({ msg: "Loading games...", type: "loading" });
     try {
       const [result, currentConfig] = await Promise.all([
-        apiGetGames(count),
+        apiGetGames(n),
         apiGetConfig(),
       ]);
       const unchecked = loadUnchecked();
@@ -197,12 +201,12 @@ function App() {
       return;
     }
     setBusy(true);
-    setStatus({ msg: "Updating Apollo config...", type: "loading" });
+    setStatus({ msg: `Syncing to ${serviceName}...`, type: "loading" });
     try {
       const result = await apiUpdateConfig(appIds);
       const updated = await apiGetConfig();
       setConfigApps(updated);
-      setStatus({ msg: `Apollo config updated with ${result.count} games.`, type: "success" });
+      setStatus({ msg: `Synced ${result.count} games to ${serviceName}.`, type: "success" });
     } catch (e) {
       setStatus({ msg: (e as Error).message, type: "error" });
     } finally {
@@ -211,6 +215,9 @@ function App() {
   }
 
   const configIdSet = new Set(configApps.map((a) => a.app_id));
+  const serviceName = /sunshine/i.test(settings.config_path) ? "Sunshine"
+    : /apollo/i.test(settings.config_path) ? "Apollo"
+    : "Streaming App";
 
   return (
     <>
@@ -222,16 +229,46 @@ function App() {
             Games:
             <input
               type="number"
-              value={count}
+              value={countInput}
               min="1"
-              max="50"
-              onChange={(e) => setCount(parseInt(e.target.value) || 10)}
-              onKeyDown={(e) => e.key === "Enter" && loadGames()}
+              max="9999"
+              onChange={(e) => setCountInput(e.target.value)}
+              onBlur={() => {
+                const n = Math.max(1, parseInt(countInput) || count);
+                setCount(n);
+                setCountInput(String(n));
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const n = Math.max(1, parseInt(countInput) || count);
+                  setCount(n);
+                  setCountInput(String(n));
+                  loadGames(n);
+                }
+              }}
             />
           </label>
-          <button className="btn-secondary" onClick={loadGames} disabled={busy}>Refresh</button>
-          <button className="btn-primary" onClick={handleUpdate} disabled={busy}>Update Apollo</button>
+          <button className="btn-secondary" onClick={() => loadGames()} disabled={busy}>Refresh</button>
+          <button className="btn-primary" onClick={handleUpdate} disabled={busy}>Sync to {serviceName}</button>
           <button className="btn-secondary" onClick={() => setSettingsOpen((o) => !o)}>Settings</button>
+          <button className="btn-secondary" onClick={async () => {
+            setBusy(true);
+            setStatus({ msg: "Restarting...", type: "loading" });
+            await fetch("/api/restart", { method: "POST" });
+            const poll = setInterval(async () => {
+              try {
+                await fetch("/api/settings");
+                clearInterval(poll);
+                setBusy(false);
+                loadGames();
+              } catch { /* still restarting */ }
+            }, 500);
+          }}>Restart</button>
+          <button className="btn-secondary" onClick={async () => {
+            await fetch("/api/shutdown", { method: "POST" });
+            setStatus({ msg: "Server shut down.", type: "success" });
+            setBusy(true);
+          }}>Shutdown</button>
         </div>
         </div>
         {settingsOpen && (

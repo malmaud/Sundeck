@@ -80,7 +80,7 @@ header h1 {
 }
 
 .controls input[type="number"] {
-  width: 56px;
+  width: 72px;
   padding: 4px 8px;
   border: 1px solid #0f3460;
   border-radius: 4px;
@@ -152,10 +152,21 @@ main {
   outline: 2px solid #e94560;
 }
 
+.game-card .game-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.game-card .game-name-row .game-name {
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+}
+
 .diff-badge {
-  position: absolute;
-  bottom: 32px;
-  right: 8px;
+  flex-shrink: 0;
   font-size: 10px;
   font-weight: 600;
   padding: 2px 6px;
@@ -211,7 +222,8 @@ main {
   opacity: 0.5;
 }
 
-.game-card img {
+.game-card img,
+.game-thumbnail-placeholder {
   width: 100%;
   aspect-ratio: 2 / 3;
   object-fit: cover;
@@ -219,8 +231,19 @@ main {
   background: #0f3460;
 }
 
+.game-thumbnail-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  color: #8888aa;
+}
+
+.game-thumbnail-placeholder::after {
+  content: "?";
+}
+
 .game-card .game-name {
-  padding: 10px 12px;
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
