@@ -23,7 +23,7 @@ uv run pyinstaller `
   --distpath "$ROOT\dist" `
   --workpath "$ROOT\build" `
   --specpath "$ROOT\build" `
-  server.py
+  main.py
 Pop-Location
 
 Write-Host ""

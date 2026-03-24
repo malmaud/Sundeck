@@ -2,6 +2,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -10,7 +11,8 @@ from steam import SteamGame, get_recent_games
 
 
 _SUNSHINE_CONFIG_DEFAULT = Path(r"C:\Program Files\Apollo\config\apps.json")
-_SUNSHINE_CMD_MARKERS = ["launch.py", "cli.py launch"]
+_SUNSHINE_CMD_MARKERS = ["launch.py", "cli.py launch", "cli.exe launch", "steamlaunch.exe launch"]
+_CLI_EXE = Path(sys.executable) if getattr(sys, "frozen", False) else None
 _CLI_SCRIPT_DEFAULT = Path(__file__).parent / "cli.py"
 _KNOWN_STREAMING_SERVICES = ["SunshineService", "ApolloService"]
 
@@ -40,13 +42,17 @@ def build_sunshine_config(
     Entries previously written by this function (identified by _SUNSHINE_CMD_MARKERS
     in their 'cmd') are replaced; all other entries are preserved.
     """
-    uv = shutil.which("uv") or "uv"
+    if _CLI_EXE:
+        cmd_template = f"{_CLI_EXE} launch --app_id={{app_id}}"
+    else:
+        uv = shutil.which("uv") or "uv"
+        cmd_template = f"{uv} run --directory {cli_script.parent} cli.py launch --app_id={{app_id}}"
     kept = [a for a in existing.apps if not any(m in a.cmd for m in _SUNSHINE_CMD_MARKERS)]
     new_apps = [
         SunshineApp.model_validate(
             {
                 "name": game.name,
-                "cmd": f"{uv} run --directory {cli_script.parent} cli.py launch --app_id={game.app_id}",
+                "cmd": cmd_template.format(app_id=game.app_id),
                 "image-path": game.thumbnail,
                 "wait-all": False,
             }
