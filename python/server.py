@@ -34,6 +34,7 @@ from sunshine import (
 )
 
 flags.DEFINE_integer("port", 5000, "Port to listen on.")
+flags.DEFINE_boolean("dev", False, "Enable dev mode: Werkzeug reloader, no tray icon.")
 
 _PYTHON_DIR = Path(__file__).parent
 if getattr(sys, "frozen", False):
@@ -516,15 +517,94 @@ def _check_port(port: int) -> None:
     sys.exit(1)
 
 
+_TRAY_COLORS = {
+    "idle":    (100, 210, 100),  # green
+    "syncing": ( 50, 160, 255),  # blue
+}
+_TRAY_TITLES = {
+    "idle":    "SteamLaunch",
+    "syncing": "SteamLaunch — Syncing…",
+}
+_TRAY_STATUS_TEXT = {
+    "idle":    "Idle",
+    "syncing": "Syncing…",
+}
+
+
+def _create_tray_image(color: tuple = (100, 210, 100)):
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([2, 2, 62, 62], fill=(30, 35, 50, 255))
+    draw.polygon([(20, 16), (20, 48), (50, 32)], fill=(*color, 255))
+    return img
+
+
+def _run_tray(port: int) -> None:
+    import pystray
+
+    def _status_text(_item):
+        return _TRAY_STATUS_TEXT.get(_get_sync_state(), "…")
+
+    menu = pystray.Menu(
+        pystray.MenuItem(_status_text, None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(
+            "Open SteamLaunch",
+            lambda _icon, _item: webbrowser.open(f"http://localhost:{port}"),
+            default=True,
+        ),
+        pystray.MenuItem(
+            "Sync Now",
+            lambda _icon, _item: threading.Thread(target=_try_auto_sync, daemon=True).start(),
+        ),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Exit", lambda icon, _item: icon.stop()),
+    )
+    icon = pystray.Icon("SteamLaunch", _create_tray_image(), "SteamLaunch", menu)
+
+    def _watch_state():
+        last = None
+        while True:
+            state = _get_sync_state()
+            if state != last:
+                icon.icon = _create_tray_image(_TRAY_COLORS.get(state, _TRAY_COLORS["idle"]))
+                icon.title = _TRAY_TITLES.get(state, "SteamLaunch")
+                last = state
+            time.sleep(0.5)
+
+    threading.Thread(target=_watch_state, daemon=True).start()
+    threading.Thread(target=icon.run, daemon=True).start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        icon.stop()
+
+
 def _main(_argv):
     del _argv
     port = flags.FLAGS.port
-    if not os.environ.get("WERKZEUG_RUN_MAIN"):
-        _check_port(port)
-        webbrowser.open(f"http://localhost:{port}")
+    if flags.FLAGS.dev:
+        # Dev mode: Werkzeug reloader active, no tray icon.
+        if not os.environ.get("WERKZEUG_RUN_MAIN"):
+            _check_port(port)
+            webbrowser.open(f"http://localhost:{port}")
+        else:
+            _start_watchers()
+        app.run(port=port, debug=True, threaded=True)
     else:
+        _check_port(port)
+        flask_thread = threading.Thread(
+            target=lambda: app.run(port=port, debug=False, threaded=True, use_reloader=False),
+            daemon=True,
+        )
+        flask_thread.start()
         _start_watchers()
-    app.run(port=port, debug=True, threaded=True)
+        webbrowser.open(f"http://localhost:{port}")
+        _run_tray(port)
+        os._exit(0)
 
 
 if __name__ == "__main__":
