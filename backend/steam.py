@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import sys
@@ -11,6 +12,8 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 from PIL import Image
 
@@ -216,9 +219,32 @@ def _get_thumbnail(app_id: int) -> str:
 
 
 def get_running_app_id() -> int:
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
-        value, _ = winreg.QueryValueEx(key, "RunningAppID")
-        return value
+    # Try the current user's hive first (works when running in user context).
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            value, _ = winreg.QueryValueEx(key, "RunningAppID")
+            _log.debug("get_running_app_id: HKCU -> %s", value)
+            return value
+    except OSError as e:
+        _log.debug("get_running_app_id: HKCU failed (%s), scanning HKEY_USERS", e)
+    # Fallback: scan all loaded user hives (works when running as SYSTEM,
+    # e.g. when Sunshine launches cli.py from its service process).
+    with winreg.OpenKey(winreg.HKEY_USERS, "") as users_key:
+        i = 0
+        while True:
+            try:
+                sid = winreg.EnumKey(users_key, i)
+            except OSError:
+                break
+            i += 1
+            try:
+                with winreg.OpenKey(winreg.HKEY_USERS, rf"{sid}\Software\Valve\Steam") as key:
+                    value, _ = winreg.QueryValueEx(key, "RunningAppID")
+                    _log.debug("get_running_app_id: HKEY_USERS\\%s -> %s", sid, value)
+                    return value
+            except OSError:
+                pass
+    raise RuntimeError("Steam registry key not found in any user hive")
 
 
 def launch_game(app_id: int) -> None:
@@ -226,18 +252,22 @@ def launch_game(app_id: int) -> None:
 
 
 def wait_for_game(app_id: int, launch_timeout: int, poll_interval: float) -> None:
-    print(f"Waiting for game {app_id} to start...")
+    _log.info("wait_for_game: waiting for app_id=%s (timeout=%ss)", app_id, launch_timeout)
     elapsed = 0
-    while get_running_app_id() != app_id:
-        time.sleep(poll_interval)
+    while True:
+        running = get_running_app_id()
+        if running == app_id:
+            break
         elapsed += poll_interval
         if elapsed >= launch_timeout:
             raise TimeoutError(
                 f"Game {app_id} did not start within {launch_timeout} seconds"
             )
+        _log.debug("wait_for_game: running=%s, elapsed=%.0fs", running, elapsed)
+        time.sleep(poll_interval)
 
-    print("Game started, waiting for exit...")
+    _log.info("wait_for_game: game started, waiting for exit")
     while get_running_app_id() == app_id:
         time.sleep(poll_interval)
 
-    print("Game exited.")
+    _log.info("wait_for_game: game exited")

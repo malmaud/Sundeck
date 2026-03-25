@@ -6,6 +6,8 @@ Then open:  http://localhost:5000
 
 import base64
 import ctypes
+import logging
+import logging.handlers
 import os
 import traceback
 import re
@@ -44,13 +46,25 @@ if getattr(sys, "frozen", False):
     _IMAGES_DIR = Path(sys._MEIPASS) / "images"  # type: ignore[attr-defined]
     _THUMBNAIL_DIR = Path(sys.executable).parent / "thumbnails"
     _SETTINGS_FILE = Path(sys.executable).parent / "settings.json"
-    _LOG_FILE = Path(sys.executable).parent / "sync_log.json"
+    _LOGS_DIR = Path(sys.executable).parent / "logs"
 else:
     _UI_DIR = _PYTHON_DIR.parent / "ui"
     _IMAGES_DIR = _PYTHON_DIR.parent / "images"
     _THUMBNAIL_DIR = _PYTHON_DIR / "thumbnails"
     _SETTINGS_FILE = _PYTHON_DIR / "settings.json"
-    _LOG_FILE = _PYTHON_DIR / "sync_log.json"
+    _LOGS_DIR = _PYTHON_DIR.parent / "logs"
+
+_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+_LOG_FILE = _LOGS_DIR / "sync_log.json"
+_SERVER_LOG_FILE = _LOGS_DIR / "server_log.txt"
+
+_server_log_handler = logging.handlers.RotatingFileHandler(
+    _SERVER_LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+)
+_server_log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_slog = logging.getLogger("steamlaunch.server")
+_slog.addHandler(_server_log_handler)
+_slog.setLevel(logging.DEBUG)
 
 _KNOWN_CONFIG_PATHS = [
     r"C:\Program Files\Apollo\config\apps.json",
@@ -341,19 +355,40 @@ def _restart_elevated() -> None:
 
 
 def _is_streaming_active() -> bool:
-    """Return True if an active Sunshine/Apollo stream is detected via TCP connections."""
+    """Return True if an active Sunshine/Apollo stream is detected.
+
+    Apollo's HTTP /serverinfo (port 47989) always returns currentgame=0
+    by design — only the HTTPS endpoint returns the real value, but that
+    requires mutual TLS with a paired client certificate.
+
+    Instead, we check whether Apollo's streaming UDP ports are bound.
+    These ports (video/control/audio at base+9/+10/+11) are only opened
+    when an active streaming session exists.
+    """
+    # Default base port 47989; streaming offsets from Apollo source (stream.h):
+    #   VIDEO_STREAM_PORT = 9, CONTROL_PORT = 10, AUDIO_STREAM_PORT = 11
+    streaming_ports = {47998, 47999, 48000}
     try:
         out = subprocess.check_output(
-            ["netstat", "-n"], text=True, creationflags=0x08000000
+            ["netstat", "-ano", "-p", "UDP"],
+            text=True,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
         )
-        # These ports carry active stream traffic (RTSP control, video, audio, input)
-        stream_ports = {":48010", ":47998", ":47999", ":48000"}
         for line in out.splitlines():
-            if "ESTABLISHED" in line and any(p in line for p in stream_ports):
-                return True
-    except Exception:
-        pass
-    return False
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "UDP":
+                try:
+                    port = int(parts[1].rsplit(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                if port in streaming_ports:
+                    _slog.debug("_is_streaming_active: UDP port %d bound, streaming active", port)
+                    return True
+        _slog.debug("_is_streaming_active: no streaming UDP ports bound, inactive")
+        return False
+    except Exception as e:
+        _slog.warning("_is_streaming_active: check failed (%s), assuming inactive", e)
+        return False
 
 
 def _do_auto_sync() -> bool:

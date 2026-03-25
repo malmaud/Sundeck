@@ -7,8 +7,11 @@ Commands:
   restart  Restart the streaming service (SunshineService / ApolloService).
 """
 import json
+import logging
+import logging.handlers
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
 from absl import app, flags
 
@@ -18,6 +21,22 @@ from sunshine import (
     build_sunshine_config,
     restart_streaming_service,
 )
+
+_LOGS_DIR = (
+    Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent.parent
+) / "logs"
+_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+_LOG_FILE = _LOGS_DIR / "cli_log.txt"
+
+def _setup_logging() -> None:
+    handler = logging.handlers.RotatingFileHandler(
+        _LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.root.addHandler(handler)
+    logging.root.setLevel(logging.DEBUG)
+
+_log = logging.getLogger(__name__)
 
 FLAGS = flags.FLAGS
 
@@ -50,8 +69,11 @@ def cmd_launch(app_id=None, launch_timeout=60, poll_interval=2.0):
     if app_id is None:
         print(json.dumps({"error": "launch requires --app_id"}))
         sys.exit(1)
+    _log.info("cmd_launch: app_id=%s launch_timeout=%s", app_id, launch_timeout)
     launch_game(app_id)
+    _log.info("launch_game called, waiting for game to start")
     wait_for_game(app_id, launch_timeout, poll_interval)
+    _log.info("wait_for_game returned, game exited")
 
 
 def cmd_restart():
@@ -68,6 +90,8 @@ COMMANDS = {
 
 
 def main(argv):
+    _setup_logging()
+    _log.info("cli.py started: argv=%s", argv)
     if len(argv) < 2 or argv[1] not in COMMANDS:
         print(json.dumps({"error": f"Usage: cli.py [{'/'.join(COMMANDS)}] [flags...]"}))
         sys.exit(1)
@@ -76,8 +100,10 @@ def main(argv):
     except SystemExit:
         raise
     except Exception as e:
+        _log.exception("unhandled exception in command %r", argv[1])
         print(json.dumps({"error": str(e)}))
         sys.exit(1)
+    _log.info("cli.py exiting normally")
 
 
 if __name__ == "__main__":
