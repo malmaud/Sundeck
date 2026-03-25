@@ -42,6 +42,12 @@ header {
   flex: 1;
 }
 
+.settings-panel .last-sync {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #8888aa;
+}
+
 .settings-panel .debug-toggle {
   flex: 0;
   white-space: nowrap;
@@ -184,6 +190,132 @@ main {
   background: #3d0a0a;
   color: #e94560;
   border: 1px solid #e94560;
+}
+
+.activity-btn {
+  position: relative;
+}
+
+.log-error-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  background: #e94560;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  background: #3d0a0a;
+  border: 1px solid #7a1a1a;
+}
+
+.error-banner-dismiss {
+  background: none;
+  border: none;
+  color: #e94560;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.log-panel {
+  margin-bottom: 16px;
+}
+
+.log-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #8888aa;
+}
+
+.log-empty {
+  font-size: 12px;
+  color: #8888aa;
+  padding: 10px 12px;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+}
+
+.log-entries {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  background: #0d1629;
+}
+
+.log-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: monospace;
+  border-bottom: 1px solid #0f3460;
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-time {
+  color: #8888aa;
+  flex-shrink: 0;
+}
+
+.log-kind {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.log-kind.manual {
+  background: #0d1f3a;
+  color: #4a9eff;
+  border: 1px solid #4a9eff;
+}
+
+.log-kind.auto {
+  background: #1a1a2e;
+  color: #8888aa;
+  border: 1px solid #555577;
+}
+
+.log-status {
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.log-status.success { color: #4caf82; }
+.log-status.error   { color: #e94560; }
+
+.log-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c0c0d0;
 }
 
 .game-grid {

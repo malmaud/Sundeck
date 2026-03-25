@@ -5,21 +5,30 @@ Then open:  http://localhost:5000
 """
 
 import base64
-import json
+import ctypes
 import os
+import traceback
 import re
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import webbrowser
 from pathlib import Path
 
 from absl import app as absl_app, flags
 from flask import Flask, Response, jsonify, request, send_from_directory
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator
 
 from steam import get_recent_games
-from sunshine import build_sunshine_config, get_managed_apps, load_sunshine_config
+from sunshine import (
+    _detect_streaming_service,
+    build_sunshine_config,
+    get_managed_apps,
+    load_sunshine_config,
+)
 
 flags.DEFINE_integer("port", 5000, "Port to listen on.")
 
@@ -30,10 +39,12 @@ if getattr(sys, "frozen", False):
     _UI_DIR = Path(sys._MEIPASS) / "ui"  # type: ignore[attr-defined]
     _THUMBNAIL_DIR = Path(sys.executable).parent / "thumbnails"
     _SETTINGS_FILE = Path(sys.executable).parent / "settings.json"
+    _LOG_FILE = Path(sys.executable).parent / "sync_log.json"
 else:
     _UI_DIR = _PYTHON_DIR.parent / "ui"
     _THUMBNAIL_DIR = _PYTHON_DIR / "thumbnails"
     _SETTINGS_FILE = _PYTHON_DIR / "settings.json"
+    _LOG_FILE = _PYTHON_DIR / "sync_log.json"
 
 _KNOWN_CONFIG_PATHS = [
     r"C:\Program Files\Apollo\config\apps.json",
@@ -42,25 +53,105 @@ _KNOWN_CONFIG_PATHS = [
 _DEFAULT_CONFIG_PATH = r"C:\Program Files\Apollo\config\apps.json"
 
 
-def _load_settings_data() -> dict:
-    if _SETTINGS_FILE.exists():
+class Settings(BaseModel):
+    config_path: str | None = None
+    unchecked_games: list[int] = Field(default_factory=list)
+    show_debug: bool = False
+    count: int = 10
+    auto_sync_hours: float = 0.0
+    last_sync_time: float = 0.0
+
+
+class SettingsPatch(BaseModel):
+    config_path: str | None = None
+    unchecked_games: list[int] | None = None
+    show_debug: bool | None = None
+    count: int | None = None
+    auto_sync_hours: float | None = None
+
+    @field_validator("config_path")
+    @classmethod
+    def _strip_config_path(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("config_path cannot be empty")
+        return v
+
+    @field_validator("count")
+    @classmethod
+    def _clamp_count(cls, v: int | None) -> int | None:
+        return max(1, v) if v is not None else None
+
+    @field_validator("auto_sync_hours")
+    @classmethod
+    def _clamp_auto_sync(cls, v: float | None) -> float | None:
+        return max(0.0, v) if v is not None else None
+
+
+class SyncLogEntry(BaseModel):
+    timestamp: float
+    kind: str   # "manual" | "auto"
+    success: bool
+    message: str
+    detail: str = ""
+
+
+_log_adapter = TypeAdapter(list[SyncLogEntry])
+_LOG_MAX = 100
+
+
+def _load_log() -> list[SyncLogEntry]:
+    if _LOG_FILE.exists():
         try:
-            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            return _log_adapter.validate_json(_LOG_FILE.read_bytes())
         except Exception:
             pass
-    return {}
+    return []
 
 
-def _save_settings_data(updates: dict) -> None:
-    data = _load_settings_data()
-    data.update(updates)
-    _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def _save_log(entries: list[SyncLogEntry]) -> None:
+    try:
+        _LOG_FILE.write_bytes(_log_adapter.dump_json(entries, indent=2))
+    except Exception:
+        pass
+
+
+_sync_log: list[SyncLogEntry] = _load_log()
+_sync_log_lock = threading.Lock()
+
+
+def _append_log(kind: str, success: bool, message: str, detail: str = "") -> None:
+    with _sync_log_lock:
+        _sync_log.append(SyncLogEntry(timestamp=time.time(), kind=kind, success=success, message=message, detail=detail))
+        del _sync_log[:-_LOG_MAX]
+        _save_log(_sync_log)
+
+
+def _load_settings() -> Settings:
+    if _SETTINGS_FILE.exists():
+        try:
+            return Settings.model_validate_json(_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return Settings()
+
+
+_settings_lock = threading.Lock()
+
+
+def _patch_settings(**kwargs) -> None:
+    with _settings_lock:
+        settings = _load_settings()
+        updated = settings.model_copy(update=kwargs)
+        _SETTINGS_FILE.write_text(updated.model_dump_json(indent=2), encoding="utf-8")
 
 
 def _load_config_path() -> Path:
-    data = _load_settings_data()
-    if "config_path" in data:
-        return Path(data["config_path"])
+    settings = _load_settings()
+    if settings.config_path:
+        return Path(settings.config_path)
     env = os.environ.get("APOLLO_CONFIG")
     if env:
         return Path(env)
@@ -115,70 +206,24 @@ def api_games() -> Response:
 
 @app.route("/api/settings", methods=["GET"])
 def api_get_settings() -> Response:
-    data = _load_settings_data()
-    config_path = _load_config_path()
-    suggestions = [p for p in _KNOWN_CONFIG_PATHS if Path(p).exists()]
-    return jsonify({
-        "config_path": str(config_path),
-        "suggestions": suggestions,
-        "unchecked_games": data.get("unchecked_games", []),
-        "show_debug": data.get("show_debug", False),
-    })
+    data = _load_settings().model_dump()
+    data["config_path"] = str(_load_config_path())
+    data["suggestions"] = [p for p in _KNOWN_CONFIG_PATHS if Path(p).exists()]
+    return jsonify(data)
 
 
 @app.route("/api/settings", methods=["POST"])
 def api_update_settings() -> Response | tuple[Response, int]:
-    body = request.get_json(silent=True) or {}
-    updates: dict = {}
-    if "config_path" in body:
-        config_path = body["config_path"].strip()
-        if not config_path:
-            return jsonify({"error": "config_path cannot be empty"}), 400
-        updates["config_path"] = config_path
-    if "unchecked_games" in body:
-        updates["unchecked_games"] = [int(i) for i in body["unchecked_games"]]
-    if "show_debug" in body:
-        updates["show_debug"] = bool(body["show_debug"])
+    try:
+        patch = SettingsPatch.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as e:
+        return jsonify({"error": e.errors()[0]["msg"]}), 400
+    updates = patch.model_dump(exclude_none=True)
     if not updates:
         return jsonify({"error": "no recognised fields"}), 400
-    _save_settings_data(updates)
+    _patch_settings(**updates)
     return jsonify({"status": "ok"})
 
-
-@app.route("/api/restart", methods=["POST"])
-def api_restart() -> Response:
-    import threading
-    import time
-
-    def _restart():
-        time.sleep(0.3)
-        # Spawn a detached helper that waits for the port to free then relaunches.
-        script = (
-            "import time, subprocess; "
-            "time.sleep(1); "
-            f"subprocess.Popen({[sys.executable] + sys.argv!r})"
-        )
-        subprocess.Popen(
-            [sys.executable, "-c", script],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-        os._exit(0)
-
-    threading.Thread(target=_restart).start()
-    return jsonify({"status": "restarting"})
-
-
-@app.route("/api/shutdown", methods=["POST"])
-def api_shutdown() -> Response:
-    import threading
-    import time
-
-    def _stop():
-        time.sleep(0.3)
-        os._exit(0)
-
-    threading.Thread(target=_stop).start()
-    return jsonify({"status": "shutting down"})
 
 
 @app.route("/api/config", methods=["GET"])
@@ -206,29 +251,58 @@ def api_update_config() -> Response | tuple[Response, int]:
     config = build_sunshine_config(existing, games)
     config_json = config.model_dump_json(by_alias=True, indent=4)
 
-    _write_elevated(apollo_config, config_json)
-    _restart_elevated()
+    try:
+        _write_elevated(apollo_config, config_json)
+        _restart_elevated()
+    except Exception as exc:
+        _append_log("manual", False, str(exc).splitlines()[0], detail=traceback.format_exc())
+        return jsonify({"error": str(exc).splitlines()[0]}), 500
+    _append_log("manual", True, f"Synced {len(app_ids)} games")
 
     return jsonify({"status": "ok", "count": len(app_ids)})
+
+
+@app.route("/api/log")
+def api_get_log() -> Response:
+    with _sync_log_lock:
+        return jsonify([e.model_dump() for e in sorted(_sync_log, key=lambda e: e.timestamp, reverse=True)])
 
 
 def _encode_command(cmd: str) -> str:
     return base64.b64encode(cmd.encode("utf-16-le")).decode("ascii")
 
 
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
 def _run_elevated(inner_cmd: str) -> None:
-    encoded = _encode_command(inner_cmd)
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-Command",
-            f"Start-Process powershell -Verb RunAs -Wait -ArgumentList "
-            f"'-NoProfile -NonInteractive -EncodedCommand {encoded}'",
-        ]
-    )
+    if _is_admin():
+        # Already elevated — run directly, no UAC prompt or extra window.
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", inner_cmd],
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+            capture_output=True, text=True,
+        )
+    else:
+        encoded = _encode_command(inner_cmd)
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                f"Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "
+                f"'-NoProfile -NonInteractive -EncodedCommand {encoded}'",
+            ],
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+            capture_output=True, text=True,
+        )
     if result.returncode != 0:
-        raise RuntimeError("Elevated command failed or was cancelled.")
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(f"Elevated command failed.\n{stderr}" if stderr else "Elevated command failed or was cancelled.")
 
 
 def _write_elevated(target_path: Path, content: str) -> None:
@@ -245,7 +319,62 @@ def _write_elevated(target_path: Path, content: str) -> None:
 
 
 def _restart_elevated() -> None:
-    _run_elevated("net stop ApolloService; net start ApolloService")
+    service = _detect_streaming_service()
+    _run_elevated(f"net stop {service}; net start {service}")
+
+
+def _is_streaming_active() -> bool:
+    """Return True if an active Sunshine/Apollo stream is detected via TCP connections."""
+    try:
+        out = subprocess.check_output(
+            ["netstat", "-n"], text=True, creationflags=0x08000000
+        )
+        # These ports carry active stream traffic (RTSP control, video, audio, input)
+        stream_ports = {":48010", ":47998", ":47999", ":48000"}
+        for line in out.splitlines():
+            if "ESTABLISHED" in line and any(p in line for p in stream_ports):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _do_auto_sync() -> None:
+    settings = _load_settings()
+    unchecked = set(settings.unchecked_games)
+    games = get_recent_games(settings.count)
+    checked_games = [g for g in games if g.app_id not in unchecked]
+    if not checked_games:
+        return
+    config_path = _load_config_path()
+    existing = load_sunshine_config(config_path)
+    config = build_sunshine_config(existing, checked_games)
+    _write_elevated(config_path, config.model_dump_json(by_alias=True, indent=4))
+    _restart_elevated()
+
+
+_sync_stop = threading.Event()
+
+
+def _sync_worker() -> None:
+    """Background thread: performs auto-sync on the configured interval."""
+    while not _sync_stop.wait(timeout=60):
+        try:
+            settings = _load_settings()
+            if settings.auto_sync_hours <= 0:
+                continue
+            if time.time() < settings.last_sync_time + settings.auto_sync_hours * 3600:
+                continue
+            if _is_streaming_active():
+                continue
+        except Exception:
+            continue
+        try:
+            _do_auto_sync()
+            _patch_settings(last_sync_time=time.time())
+            _append_log("auto", True, "Synced games")
+        except Exception as exc:
+            _append_log("auto", False, str(exc).splitlines()[0] or "Auto-sync failed", detail=traceback.format_exc())
 
 
 def _check_port(port: int) -> None:
@@ -302,6 +431,8 @@ def _main(_argv):
     if not os.environ.get("WERKZEUG_RUN_MAIN"):
         _check_port(port)
         webbrowser.open(f"http://localhost:{port}")
+    else:
+        threading.Thread(target=_sync_worker, daemon=True).start()
     app.run(port=port, debug=True, threaded=True)
 
 

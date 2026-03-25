@@ -10,3 +10,4 @@ dist/
 build/
 python/settings.json
 python/name_cache.json
+python/sync_log.json

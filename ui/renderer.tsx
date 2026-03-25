@@ -18,11 +18,22 @@ interface Settings {
   suggestions: string[];
   unchecked_games: number[];
   show_debug: boolean;
+  count: number;
+  auto_sync_hours: number;
+  last_sync_time: number;
 }
 
 interface Status {
   msg: string;
   type: "loading" | "error" | "success";
+}
+
+interface LogEntry {
+  timestamp: number;
+  kind: "manual" | "auto";
+  success: boolean;
+  message: string;
+  detail: string;
 }
 
 interface GameCardProps {
@@ -60,6 +71,12 @@ async function apiPatchSettings(updates: Partial<Omit<Settings, "suggestions">>)
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+}
+
+async function apiGetLog(): Promise<LogEntry[]> {
+  const res = await fetch("/api/log");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<LogEntry[]>;
 }
 
 async function apiUpdateConfig(appIds: number[]): Promise<{ status: string; count: number }> {
@@ -130,10 +147,29 @@ function App() {
   const [countInput, setCountInput] = useState("10");
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
-  const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [], unchecked_games: [], show_debug: false });
+  const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [], unchecked_games: [], show_debug: false, count: 10, auto_sync_hours: 0, last_sync_time: 0 });
   const [configPathInput, setConfigPathInput] = useState("");
+  const [autoSyncHoursInput, setAutoSyncHoursInput] = useState("0");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [hasLogError, setHasLogError] = useState(false);
+  const [errorBannerMsg, setErrorBannerMsg] = useState<string | null>(null);
+
+  const refreshLog = useCallback(() => {
+    apiGetLog().then(entries => {
+      setLogEntries(entries);
+      setHasLogError(!!entries[0] && !entries[0].success);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!logOpen) return;
+    refreshLog();
+    const id = setInterval(refreshLog, 10_000);
+    return () => clearInterval(id);
+  }, [logOpen, refreshLog]);
 
   const loadGames = useCallback(async (n = count) => {
     setBusy(true);
@@ -157,21 +193,36 @@ function App() {
   }, [count]);
 
   useEffect(() => {
-    loadGames();
     apiGetSettings().then((s) => {
       setSettings(s);
       setConfigPathInput(s.config_path);
       setShowDebug(s.show_debug);
+      setAutoSyncHoursInput(String(s.auto_sync_hours));
+      setCount(s.count);
+      setCountInput(String(s.count));
+      loadGames(s.count);
+    }).catch(() => {
+      loadGames();
+    });
+    apiGetLog().then(entries => {
+      setLogEntries(entries);
+      const latest = entries[0];
+      if (latest && !latest.success) {
+        setHasLogError(true);
+        setErrorBannerMsg(latest.message);
+      }
     }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSaveSettings(): Promise<void> {
     setBusy(true);
     try {
-      await apiPatchSettings({ config_path: configPathInput });
+      const autoSyncHours = Math.max(0, parseFloat(autoSyncHoursInput) || 0);
+      await apiPatchSettings({ config_path: configPathInput, auto_sync_hours: autoSyncHours });
       const s = await apiGetSettings();
       setSettings(s);
       setConfigPathInput(s.config_path);
+      setAutoSyncHoursInput(String(s.auto_sync_hours));
       setSettingsOpen(false);
       setStatus({ msg: "Settings saved.", type: "success" });
     } catch (e) {
@@ -208,8 +259,10 @@ function App() {
       const updated = await apiGetConfig();
       setConfigApps(updated);
       setStatus({ msg: `Synced ${result.count} games to ${serviceName}.`, type: "success" });
+      if (logOpen) refreshLog();
     } catch (e) {
       setStatus({ msg: (e as Error).message, type: "error" });
+      if (logOpen) refreshLog();
     } finally {
       setBusy(false);
     }
@@ -238,12 +291,14 @@ function App() {
                 const n = Math.max(1, parseInt(countInput) || count);
                 setCount(n);
                 setCountInput(String(n));
+                apiPatchSettings({ count: n }).catch(() => {});
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   const n = Math.max(1, parseInt(countInput) || count);
                   setCount(n);
                   setCountInput(String(n));
+                  apiPatchSettings({ count: n }).catch(() => {});
                   loadGames(n);
                 }
               }}
@@ -252,24 +307,9 @@ function App() {
           <button className="btn-secondary" onClick={() => loadGames()} disabled={busy}>Refresh</button>
           <button className="btn-primary" onClick={handleUpdate} disabled={busy}>Sync to {serviceName}</button>
           <button className="btn-secondary" onClick={() => setSettingsOpen((o) => !o)}>Settings</button>
-          <button className="btn-secondary" onClick={async () => {
-            setBusy(true);
-            setStatus({ msg: "Restarting...", type: "loading" });
-            await fetch("/api/restart", { method: "POST" });
-            const poll = setInterval(async () => {
-              try {
-                await fetch("/api/settings");
-                clearInterval(poll);
-                setBusy(false);
-                loadGames();
-              } catch { /* still restarting */ }
-            }, 500);
-          }}>Restart</button>
-          <button className="btn-secondary" onClick={async () => {
-            await fetch("/api/shutdown", { method: "POST" });
-            setStatus({ msg: "Server shut down.", type: "success" });
-            setBusy(true);
-          }}>Shutdown</button>
+          <button className="btn-secondary activity-btn" onClick={() => setLogOpen((o) => !o)}>
+            Activity{hasLogError && <span className="log-error-badge" />}
+          </button>
         </div>
         </div>
         {settingsOpen && (
@@ -287,6 +327,22 @@ function App() {
               <datalist id="config-path-suggestions">
                 {settings.suggestions.map((s) => <option key={s} value={s} />)}
               </datalist>
+            </label>
+            <label>
+              Auto-sync every
+              <input
+                type="number"
+                value={autoSyncHoursInput}
+                min="0"
+                step="1"
+                onChange={(e) => setAutoSyncHoursInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSaveSettings()}
+                style={{ width: 60 }}
+              />
+              hours (0 to disable)
+              {settings.auto_sync_hours > 0 && settings.last_sync_time > 0 && (
+                <span className="last-sync">last synced {new Date(settings.last_sync_time * 1000).toLocaleString()}</span>
+              )}
             </label>
             <label className="debug-toggle">
               <input
@@ -306,6 +362,37 @@ function App() {
       <main>
         {status && (
           <div className={`status ${status.type}`}>{status.msg}</div>
+        )}
+        {errorBannerMsg && (
+          <div className="error-banner">
+            <span>Last sync failed: {errorBannerMsg}</span>
+            <button className="error-banner-dismiss" onClick={() => setErrorBannerMsg(null)}>✕</button>
+          </div>
+        )}
+        {logOpen && (
+          <div className="log-panel">
+            <div className="log-panel-header">
+              <span>Activity Log</span>
+              <button className="btn-secondary" onClick={refreshLog}>Refresh</button>
+            </div>
+            {logEntries.length === 0
+              ? <div className="log-empty">No activity yet.</div>
+              : <div className="log-entries">
+                  {logEntries.map((e, i) => (
+                    <div key={i} className="log-entry" title={e.detail || undefined}>
+                      <span className="log-time">
+                        {new Date(e.timestamp * 1000).toLocaleString()}
+                      </span>
+                      <span className={`log-kind ${e.kind}`}>{e.kind}</span>
+                      <span className={`log-status ${e.success ? "success" : "error"}`}>
+                        {e.success ? "✓" : "✗"}
+                      </span>
+                      <span className="log-msg">{e.message}</span>
+                    </div>
+                  ))}
+                </div>
+            }
+          </div>
         )}
         <div className="game-grid">
           {games.map((game) => (
