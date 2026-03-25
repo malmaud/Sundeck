@@ -2,7 +2,7 @@
 # Requirements (developer machine only): uv, node/npm
 $ErrorActionPreference = "Stop"
 
-$ROOT = $PSScriptRoot
+$ROOT = "$PSScriptRoot/.."
 
 Write-Host "==> Building UI bundle..."
 Push-Location "$ROOT\ui"
