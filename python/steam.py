@@ -64,15 +64,22 @@ def _fetch_name_from_steam(app_id: str) -> str | None:
     return None
 
 
-def get_recent_games(count: int = 10, only_ids: set[int] | None = None) -> list[SteamGame]:
-    """Return the most recently played Steam games from localconfig.vdf."""
+def get_vdf_path() -> Path | None:
+    """Return the most-recently-modified localconfig.vdf, or None."""
     steam_root = (
         Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Steam"
     )
     paths = list(steam_root.glob(r"userdata\*\config\localconfig.vdf"))
     if not paths:
+        return None
+    return max(paths, key=lambda p: p.stat().st_mtime)
+
+
+def get_recent_games(count: int = 10, only_ids: set[int] | None = None) -> list[SteamGame]:
+    """Return the most recently played Steam games from localconfig.vdf."""
+    vdf_path = get_vdf_path()
+    if vdf_path is None:
         return []
-    vdf_path = max(paths, key=lambda p: p.stat().st_mtime)
 
     # Collect names: persistent Steam API cache, then registry (both best-effort)
     names: dict[str, str] = _load_name_cache()

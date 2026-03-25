@@ -24,6 +24,8 @@ class SunshineApp(BaseModel):
     cmd: str = ""
     image_path: str = Field(default="", alias="image-path")
     wait_all: bool = Field(default=True, alias="wait-all")
+    auto_detach: bool = Field(default=True, alias="auto-detach")
+    exit_timeout: int = Field(default=5, alias="exit-timeout")
 
 
 class SunshineConfig(BaseModel):
@@ -55,6 +57,8 @@ def build_sunshine_config(
                 "cmd": cmd_template.format(app_id=game.app_id),
                 "image-path": game.thumbnail,
                 "wait-all": False,
+                "auto-detach": False,
+                "exit-timeout": 0,
             }
         )
         for game in games

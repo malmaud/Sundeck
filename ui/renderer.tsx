@@ -8,19 +8,13 @@ interface Game {
   last_played: number;
 }
 
-interface ConfigApp {
-  app_id: number;
-  name: string;
-}
-
 interface Settings {
   config_path: string;
   suggestions: string[];
   unchecked_games: number[];
   show_debug: boolean;
   count: number;
-  auto_sync_hours: number;
-  last_sync_time: number;
+  auto_sync: boolean;
 }
 
 interface Status {
@@ -40,8 +34,6 @@ interface GameCardProps {
   game: Game;
   checked: boolean;
   onToggle: () => void;
-  willAdd: boolean;
-  willRemove: boolean;
   showDebug: boolean;
 }
 
@@ -49,12 +41,6 @@ async function apiGetGames(count: number): Promise<Game[]> {
   const res = await fetch(`/api/games?count=${count}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json() as Promise<Game[]>;
-}
-
-async function apiGetConfig(): Promise<ConfigApp[]> {
-  const res = await fetch("/api/config");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<ConfigApp[]>;
 }
 
 async function apiGetSettings(): Promise<Settings> {
@@ -71,6 +57,12 @@ async function apiPatchSettings(updates: Partial<Omit<Settings, "suggestions">>)
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+}
+
+async function apiGetSyncStatus(): Promise<{ state: string; games_version: number }> {
+  const res = await fetch("/api/sync-status");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<{ state: string; games_version: number }>;
 }
 
 async function apiGetLog(): Promise<LogEntry[]> {
@@ -90,7 +82,7 @@ async function apiUpdateConfig(appIds: number[]): Promise<{ status: string; coun
   return data as { status: string; count: number };
 }
 
-function GameCard({ game, checked, onToggle, willAdd, willRemove, showDebug }: GameCardProps) {
+function GameCard({ game, checked, onToggle, showDebug }: GameCardProps) {
   const [imgLoaded, setImgLoaded] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -100,11 +92,8 @@ function GameCard({ game, checked, onToggle, willAdd, willRemove, showDebug }: G
     }
   }, []);
 
-  let extra = "";
-  if (willAdd) extra = " will-add";
-  else if (willRemove) extra = " will-remove";
   return (
-    <div className={`game-card${checked ? " checked" : ""}${extra}`}>
+    <div className={`game-card${checked ? " checked" : ""}`}>
       <input
         type="checkbox"
         className="game-check"
@@ -126,8 +115,7 @@ function GameCard({ game, checked, onToggle, willAdd, willRemove, showDebug }: G
       }
       <div className="game-name-row">
         <div className="game-name" title={game.name}>{game.name}</div>
-        {willAdd && <div className="diff-badge add">+ add</div>}
-        {willRemove && <div className="diff-badge remove">− remove</div>}
+
       </div>
       {showDebug && <div className="game-id">App ID: {game.app_id}</div>}
       {game.last_played > 0 && (
@@ -142,20 +130,22 @@ function GameCard({ game, checked, onToggle, willAdd, willRemove, showDebug }: G
 function App() {
   const [games, setGames] = useState<Game[]>([]);
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
-  const [configApps, setConfigApps] = useState<ConfigApp[]>([]);
-  const [count, setCount] = useState(10);
+const [count, setCount] = useState(10);
   const [countInput, setCountInput] = useState("10");
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
-  const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [], unchecked_games: [], show_debug: false, count: 10, auto_sync_hours: 0, last_sync_time: 0 });
+  const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [], unchecked_games: [], show_debug: false, count: 10, auto_sync: true });
   const [configPathInput, setConfigPathInput] = useState("");
-  const [autoSyncHoursInput, setAutoSyncHoursInput] = useState("0");
+  const [autoSync, setAutoSync] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [hasLogError, setHasLogError] = useState(false);
   const [errorBannerMsg, setErrorBannerMsg] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<string>("idle");
+  const prevSyncState = useRef("idle");
+  const prevGamesVersion = useRef<number | null>(null);
 
   const refreshLog = useCallback(() => {
     apiGetLog().then(entries => {
@@ -175,15 +165,13 @@ function App() {
     setBusy(true);
     setStatus({ msg: "Loading games...", type: "loading" });
     try {
-      const [result, currentConfig, s] = await Promise.all([
+      const [result, s] = await Promise.all([
         apiGetGames(n),
-        apiGetConfig(),
         apiGetSettings(),
       ]);
       const unchecked = new Set<number>(s.unchecked_games);
       setGames(result);
       setCheckedIds(new Set(result.filter((g) => !unchecked.has(g.app_id)).map((g) => g.app_id)));
-      setConfigApps(currentConfig);
       setStatus(null);
     } catch (e) {
       setStatus({ msg: (e as Error).message, type: "error" });
@@ -193,11 +181,30 @@ function App() {
   }, [count]);
 
   useEffect(() => {
+    function poll() {
+      apiGetSyncStatus().then(({ state, games_version }) => {
+        setSyncState(state);
+        if (prevSyncState.current === "syncing" && state === "idle") {
+          refreshLog();
+        }
+        prevSyncState.current = state;
+        if (prevGamesVersion.current !== null && games_version !== prevGamesVersion.current) {
+          loadGames();
+        }
+        prevGamesVersion.current = games_version;
+      }).catch(() => {});
+    }
+    poll();
+    const id = setInterval(poll, 2_000);
+    return () => clearInterval(id);
+  }, [refreshLog, loadGames]);
+
+  useEffect(() => {
     apiGetSettings().then((s) => {
       setSettings(s);
       setConfigPathInput(s.config_path);
       setShowDebug(s.show_debug);
-      setAutoSyncHoursInput(String(s.auto_sync_hours));
+      setAutoSync(s.auto_sync);
       setCount(s.count);
       setCountInput(String(s.count));
       loadGames(s.count);
@@ -214,25 +221,8 @@ function App() {
     }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function handleSaveSettings(): Promise<void> {
-    setBusy(true);
-    try {
-      const autoSyncHours = Math.max(0, parseFloat(autoSyncHoursInput) || 0);
-      await apiPatchSettings({ config_path: configPathInput, auto_sync_hours: autoSyncHours });
-      const s = await apiGetSettings();
-      setSettings(s);
-      setConfigPathInput(s.config_path);
-      setAutoSyncHoursInput(String(s.auto_sync_hours));
-      setSettingsOpen(false);
-      setStatus({ msg: "Settings saved.", type: "success" });
-    } catch (e) {
-      setStatus({ msg: (e as Error).message, type: "error" });
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function toggleGame(appId: number): void {
+    if (autoSync) setSyncState("syncing");
     setCheckedIds((prev) => {
       const next = new Set(prev);
       if (next.has(appId)) {
@@ -253,25 +243,20 @@ function App() {
       return;
     }
     setBusy(true);
-    setStatus({ msg: `Syncing to ${serviceName}...`, type: "loading" });
+    setSyncState("syncing");
     try {
       const result = await apiUpdateConfig(appIds);
-      const updated = await apiGetConfig();
-      setConfigApps(updated);
-      setStatus({ msg: `Synced ${result.count} games to ${serviceName}.`, type: "success" });
+      setStatus({ msg: `Synced ${result.count} games.`, type: "success" });
       if (logOpen) refreshLog();
     } catch (e) {
       setStatus({ msg: (e as Error).message, type: "error" });
       if (logOpen) refreshLog();
     } finally {
       setBusy(false);
+      setSyncState("idle");
     }
   }
 
-  const configIdSet = new Set(configApps.map((a) => a.app_id));
-  const serviceName = /sunshine/i.test(settings.config_path) ? "Sunshine"
-    : /apollo/i.test(settings.config_path) ? "Apollo"
-    : "Streaming App";
 
   return (
     <>
@@ -280,7 +265,7 @@ function App() {
         <h1>SteamLaunch</h1>
         <div className="controls">
           <label>
-            Games:
+            Number of recent games to sync:
             <input
               type="number"
               value={countInput}
@@ -291,6 +276,7 @@ function App() {
                 const n = Math.max(1, parseInt(countInput) || count);
                 setCount(n);
                 setCountInput(String(n));
+                if (autoSync) setSyncState("syncing");
                 apiPatchSettings({ count: n }).catch(() => {});
               }}
               onKeyDown={(e) => {
@@ -298,15 +284,16 @@ function App() {
                   const n = Math.max(1, parseInt(countInput) || count);
                   setCount(n);
                   setCountInput(String(n));
+                  if (autoSync) setSyncState("syncing");
                   apiPatchSettings({ count: n }).catch(() => {});
                   loadGames(n);
                 }
               }}
             />
           </label>
-          <button className="btn-secondary" onClick={() => loadGames()} disabled={busy}>Refresh</button>
-          <button className="btn-primary" onClick={handleUpdate} disabled={busy}>Sync to {serviceName}</button>
+          <button className="btn-secondary" onClick={handleUpdate} disabled={busy}>Manually sync now</button>
           <button className="btn-secondary" onClick={() => setSettingsOpen((o) => !o)}>Settings</button>
+          {(syncState === "pending" || syncState === "syncing") && <span className="sync-status syncing">Syncing…</span>}
           <button className="btn-secondary activity-btn" onClick={() => setLogOpen((o) => !o)}>
             Activity{hasLogError && <span className="log-error-badge" />}
           </button>
@@ -321,28 +308,24 @@ function App() {
                 className="config-path-input"
                 value={configPathInput}
                 onChange={(e) => setConfigPathInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSaveSettings()}
+                onBlur={() => apiPatchSettings({ config_path: configPathInput }).catch(() => {})}
+                onKeyDown={(e) => e.key === "Enter" && apiPatchSettings({ config_path: configPathInput }).catch(() => {})}
                 spellCheck={false}
               />
               <datalist id="config-path-suggestions">
                 {settings.suggestions.map((s) => <option key={s} value={s} />)}
               </datalist>
             </label>
-            <label>
-              Auto-sync every
+            <label className="auto-sync-toggle">
               <input
-                type="number"
-                value={autoSyncHoursInput}
-                min="0"
-                step="1"
-                onChange={(e) => setAutoSyncHoursInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSaveSettings()}
-                style={{ width: 60 }}
+                type="checkbox"
+                checked={autoSync}
+                onChange={(e) => {
+                  setAutoSync(e.target.checked);
+                  apiPatchSettings({ auto_sync: e.target.checked }).catch(() => {});
+                }}
               />
-              hours (0 to disable)
-              {settings.auto_sync_hours > 0 && settings.last_sync_time > 0 && (
-                <span className="last-sync">last synced {new Date(settings.last_sync_time * 1000).toLocaleString()}</span>
-              )}
+              Auto-sync when game list changes
             </label>
             <label className="debug-toggle">
               <input
@@ -355,7 +338,7 @@ function App() {
               />
               Show debug information
             </label>
-            <button className="btn-primary" onClick={handleSaveSettings} disabled={busy}>Save</button>
+
           </div>
         )}
       </header>
@@ -401,8 +384,6 @@ function App() {
               game={game}
               checked={checkedIds.has(game.app_id)}
               onToggle={() => toggleGame(game.app_id)}
-              willAdd={checkedIds.has(game.app_id) && !configIdSet.has(game.app_id)}
-              willRemove={!checkedIds.has(game.app_id) && configIdSet.has(game.app_id)}
               showDebug={showDebug}
             />
           ))}

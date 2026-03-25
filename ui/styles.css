@@ -93,6 +93,12 @@ header h1 {
   background: #1a1a2e;
   color: #e0e0e0;
   font-size: 13px;
+  appearance: textfield;
+}
+
+.controls input[type="number"]::-webkit-inner-spin-button,
+.controls input[type="number"]::-webkit-outer-spin-button {
+  display: none;
 }
 
 button {
@@ -205,6 +211,24 @@ main {
   background: #e94560;
   border-radius: 50%;
   pointer-events: none;
+}
+
+.sync-status {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.sync-status.syncing {
+  background: rgba(99, 179, 237, 0.15);
+  color: #63b3ed;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .error-banner {

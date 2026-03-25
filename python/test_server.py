@@ -1,10 +1,12 @@
-"""Tests for server.py — streaming detection, auto-sync scheduling, and sync execution."""
+"""Tests for server.py — streaming detection, auto-sync logic, and file watcher."""
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import server
-from server import Settings, _do_auto_sync, _is_streaming_active, _sync_worker
+from server import Settings, _do_auto_sync, _is_streaming_active, _try_auto_sync, _SyncEventHandler, _schedule_sync, _set_sync_state, _get_sync_state
 from steam import SteamGame
 
 
@@ -73,125 +75,177 @@ class TestIsStreamingActive(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# _sync_worker — scheduling logic
+# _try_auto_sync
 # ---------------------------------------------------------------------------
 
 
-def _run_worker_tick(settings_data, now, streaming=False, sync_raises=None):
-    """Run exactly one tick of _sync_worker and return (sync_called, save_called)."""
-    ticks = [0]
+class TestTryAutoSync(unittest.TestCase):
+    def _run(self, auto_sync=True, streaming=False, sync_returns=False, sync_raises=None):
+        """Call _try_auto_sync with mocks; return (sync_called, log_mock, schedule_mock)."""
+        settings = Settings(auto_sync=auto_sync)
+        side = sync_raises if sync_raises else MagicMock(return_value=sync_returns)
+        mock_sync = MagicMock(side_effect=side)
+        mock_log = MagicMock()
+        mock_schedule = MagicMock()
 
-    def fake_wait(timeout):
-        ticks[0] += 1
-        return ticks[0] > 1  # first call → False (run tick); second → True (stop)
+        with patch("server._load_settings", return_value=settings), \
+             patch("server._is_streaming_active", return_value=streaming), \
+             patch("server._do_auto_sync", mock_sync), \
+             patch("server._append_log", mock_log), \
+             patch("server._schedule_sync", mock_schedule):
+            _try_auto_sync()
 
-    mock_sync = MagicMock(side_effect=sync_raises)
-    mock_save = MagicMock()
-    settings = Settings(**settings_data) if isinstance(settings_data, dict) else settings_data
-
-    with patch.object(server._sync_stop, "wait", side_effect=fake_wait), \
-         patch("server._load_settings", return_value=settings), \
-         patch("server.time.time", return_value=now), \
-         patch("server._is_streaming_active", return_value=streaming), \
-         patch("server._do_auto_sync", mock_sync), \
-         patch("server._patch_settings", mock_save), \
-         patch("server._append_log"):
-        _sync_worker()
-
-    return mock_sync.called, mock_save.called
-
-
-class TestSyncWorkerScheduling(unittest.TestCase):
-    _BASE = {"auto_sync_hours": 6.0, "last_sync_time": 0.0}
+        return mock_sync.called, mock_log, mock_schedule
 
     def test_does_not_sync_when_disabled(self):
-        synced, _ = _run_worker_tick({**self._BASE, "auto_sync_hours": 0}, now=99999.0)
+        synced, _, _ = self._run(auto_sync=False)
         self.assertFalse(synced)
 
-    def test_does_not_sync_when_interval_not_elapsed(self):
-        now = 3600.0
-        synced, _ = _run_worker_tick(
-            {**self._BASE, "auto_sync_hours": 6.0, "last_sync_time": now - 3000},
-            now=now,
-        )
-        self.assertFalse(synced)
-
-    def test_syncs_when_interval_has_elapsed(self):
-        synced, _ = _run_worker_tick({**self._BASE, "last_sync_time": 0.0}, now=7 * 3600.0)
+    def test_calls_sync_when_enabled(self):
+        synced, _, _ = self._run(auto_sync=True)
         self.assertTrue(synced)
 
-    def test_does_not_sync_when_streaming_active(self):
-        synced, _ = _run_worker_tick(
-            {**self._BASE, "last_sync_time": 0.0}, now=7 * 3600.0, streaming=True
-        )
+    def test_defers_when_streaming_active(self):
+        synced, _, mock_schedule = self._run(auto_sync=True, streaming=True)
         self.assertFalse(synced)
+        mock_schedule.assert_called_once()
 
-    def test_saves_last_sync_time_after_successful_sync(self):
-        _, saved = _run_worker_tick({**self._BASE, "last_sync_time": 0.0}, now=7 * 3600.0)
-        self.assertTrue(saved)
+    def test_logs_success_when_sync_returns_true(self):
+        _, mock_log, _ = self._run(sync_returns=True)
+        mock_log.assert_called_once_with("auto", True, "Synced games")
 
-    def test_does_not_save_when_sync_is_skipped(self):
-        _, saved = _run_worker_tick({**self._BASE, "auto_sync_hours": 0}, now=99999.0)
-        self.assertFalse(saved)
-
-    def test_does_not_save_when_streaming_blocks_sync(self):
-        _, saved = _run_worker_tick(
-            {**self._BASE, "last_sync_time": 0.0}, now=7 * 3600.0, streaming=True
-        )
-        self.assertFalse(saved)
+    def test_does_not_log_when_sync_returns_false(self):
+        _, mock_log, _ = self._run(sync_returns=False)
+        mock_log.assert_not_called()
 
     def test_does_not_crash_when_sync_raises(self):
-        # Must complete without propagating the exception
-        _run_worker_tick(
-            {**self._BASE, "last_sync_time": 0.0},
-            now=7 * 3600.0,
-            sync_raises=RuntimeError("UAC cancelled"),
-        )
+        self._run(sync_raises=RuntimeError("UAC cancelled"))
 
-    def test_does_not_save_when_sync_raises(self):
-        _, saved = _run_worker_tick(
-            {**self._BASE, "last_sync_time": 0.0},
-            now=7 * 3600.0,
-            sync_raises=RuntimeError("UAC cancelled"),
-        )
-        self.assertFalse(saved)
+    def test_logs_error_when_sync_raises(self):
+        _, mock_log, _ = self._run(sync_raises=RuntimeError("UAC cancelled"))
+        mock_log.assert_called_once()
+        args = mock_log.call_args[0]
+        self.assertEqual(args[0], "auto")
+        self.assertFalse(args[1])
 
-    def test_syncs_exactly_at_interval_boundary(self):
-        interval, last = 6.0, 1000.0
-        synced, _ = _run_worker_tick(
-            {**self._BASE, "auto_sync_hours": interval, "last_sync_time": last},
-            now=last + interval * 3600,
-        )
-        self.assertTrue(synced)
+    def test_does_not_log_when_disabled(self):
+        _, mock_log, _ = self._run(auto_sync=False)
+        mock_log.assert_not_called()
 
-    def test_does_not_sync_one_second_before_interval(self):
-        interval, last = 6.0, 1000.0
-        synced, _ = _run_worker_tick(
-            {**self._BASE, "auto_sync_hours": interval, "last_sync_time": last},
-            now=last + interval * 3600 - 1,
-        )
-        self.assertFalse(synced)
 
-    def test_settings_read_fresh_each_tick(self):
-        """_load_settings_data must be called on every tick so live changes take effect."""
-        ticks = [0]
+# ---------------------------------------------------------------------------
+# sync state transitions
+# ---------------------------------------------------------------------------
 
-        def fake_wait(timeout):
-            ticks[0] += 1
-            return ticks[0] > 2  # two ticks
 
-        mock_load = MagicMock(return_value=Settings(auto_sync_hours=0))
+class TestSyncState(unittest.TestCase):
+    def setUp(self):
+        _set_sync_state("idle")
+        with server._sync_timer_lock:
+            if server._sync_timer is not None:
+                server._sync_timer.cancel()
+                server._sync_timer = None
 
-        with patch.object(server._sync_stop, "wait", side_effect=fake_wait), \
-             patch("server._load_settings", mock_load), \
-             patch("server.time.time", return_value=0.0), \
+    def test_schedule_sync_sets_pending(self):
+        with patch("server._try_auto_sync"):
+            _schedule_sync(delay=60)
+        self.assertEqual(_get_sync_state(), "pending")
+
+    def test_try_auto_sync_sets_syncing_then_idle(self):
+        observed = []
+
+        def fake_do_sync():
+            observed.append(_get_sync_state())
+            return True
+
+        with patch("server._load_settings", return_value=Settings(auto_sync=True)), \
              patch("server._is_streaming_active", return_value=False), \
-             patch("server._do_auto_sync"), \
-             patch("server._patch_settings"), \
+             patch("server._do_auto_sync", side_effect=fake_do_sync), \
              patch("server._append_log"):
-            _sync_worker()
+            _try_auto_sync()
 
-        self.assertEqual(mock_load.call_count, 2)
+        self.assertEqual(observed, ["syncing"])
+        self.assertEqual(_get_sync_state(), "idle")
+
+    def test_try_auto_sync_resets_to_idle_when_sync_raises(self):
+        with patch("server._load_settings", return_value=Settings(auto_sync=True)), \
+             patch("server._is_streaming_active", return_value=False), \
+             patch("server._do_auto_sync", side_effect=RuntimeError("fail")), \
+             patch("server._append_log"):
+            _try_auto_sync()
+
+        self.assertEqual(_get_sync_state(), "idle")
+
+    def test_try_auto_sync_resets_to_idle_when_disabled(self):
+        _set_sync_state("pending")
+        with patch("server._load_settings", return_value=Settings(auto_sync=False)):
+            _try_auto_sync()
+
+        self.assertEqual(_get_sync_state(), "idle")
+
+    def test_try_auto_sync_stays_pending_when_streaming(self):
+        _set_sync_state("pending")
+        with patch("server._load_settings", return_value=Settings(auto_sync=True)), \
+             patch("server._is_streaming_active", return_value=True), \
+             patch("server._schedule_sync"):
+            _try_auto_sync()
+
+        # State remains pending (re-scheduled), not bumped to syncing or reset to idle
+        self.assertEqual(_get_sync_state(), "pending")
+
+    def test_api_sync_status_returns_idle(self):
+        _set_sync_state("idle")
+        with server.app.test_client() as client:
+            resp = client.get("/api/sync-status")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["state"], "idle")
+
+    def test_api_sync_status_returns_pending(self):
+        _set_sync_state("pending")
+        with server.app.test_client() as client:
+            resp = client.get("/api/sync-status")
+        self.assertEqual(resp.get_json()["state"], "pending")
+
+    def test_api_sync_status_returns_syncing(self):
+        _set_sync_state("syncing")
+        with server.app.test_client() as client:
+            resp = client.get("/api/sync-status")
+        self.assertEqual(resp.get_json()["state"], "syncing")
+
+
+# ---------------------------------------------------------------------------
+# _SyncEventHandler
+# ---------------------------------------------------------------------------
+
+
+class TestSyncEventHandler(unittest.TestCase):
+    def test_triggers_on_matching_filename(self):
+        handler = _SyncEventHandler({"localconfig.vdf"})
+        event = MagicMock(is_directory=False, src_path=r"C:\Steam\userdata\123\config\localconfig.vdf")
+        with patch("server._schedule_sync") as mock_schedule:
+            handler.on_modified(event)
+        mock_schedule.assert_called_once()
+
+    def test_ignores_non_matching_filename(self):
+        handler = _SyncEventHandler({"localconfig.vdf"})
+        event = MagicMock(is_directory=False, src_path=r"C:\Steam\userdata\123\config\other.vdf")
+        with patch("server._schedule_sync") as mock_schedule:
+            handler.on_modified(event)
+        mock_schedule.assert_not_called()
+
+    def test_ignores_directory_events(self):
+        handler = _SyncEventHandler({"localconfig.vdf"})
+        event = MagicMock(is_directory=True, src_path=r"C:\Steam\userdata\123\config")
+        with patch("server._schedule_sync") as mock_schedule:
+            handler.on_modified(event)
+        mock_schedule.assert_not_called()
+
+    def test_matching_is_case_insensitive(self):
+        handler = _SyncEventHandler({"LocalConfig.VDF"})
+        event = MagicMock(is_directory=False, src_path=r"C:\Steam\localconfig.vdf")
+        with patch("server._schedule_sync") as mock_schedule:
+            handler.on_modified(event)
+        mock_schedule.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +255,7 @@ class TestSyncWorkerScheduling(unittest.TestCase):
 
 class TestDoAutoSync(unittest.TestCase):
     def _run(self, settings_data, games=None):
-        """Run _do_auto_sync with the given settings and games; return (mock_write, mock_restart)."""
+        """Run _do_auto_sync with the given settings and games; return (mock_write, mock_restart, result)."""
         if games is None:
             games = FAKE_GAMES
         fake_config = MagicMock()
@@ -217,24 +271,25 @@ class TestDoAutoSync(unittest.TestCase):
              patch("server.build_sunshine_config", return_value=fake_config), \
              patch("server._write_elevated", mock_write), \
              patch("server._restart_elevated", mock_restart):
-            _do_auto_sync()
+            result = _do_auto_sync()
 
-        return mock_write, mock_restart
+        return mock_write, mock_restart, result
 
     def test_writes_and_restarts_when_games_available(self):
-        mock_write, mock_restart = self._run({"count": 10, "unchecked_games": []})
+        mock_write, mock_restart, result = self._run({"count": 10, "unchecked_games": []})
         mock_write.assert_called_once()
         mock_restart.assert_called_once()
+        self.assertTrue(result)
 
-    def test_does_nothing_when_no_games_returned(self):
-        mock_write, mock_restart = self._run({"count": 10, "unchecked_games": []}, games=[])
-        mock_write.assert_not_called()
-        mock_restart.assert_not_called()
+    def test_returns_false_when_no_games_returned(self):
+        _, _, result = self._run({"count": 10, "unchecked_games": []}, games=[])
+        self.assertFalse(result)
 
     def test_does_nothing_when_all_games_unchecked(self):
-        mock_write, mock_restart = self._run({"count": 10, "unchecked_games": [100, 200]})
+        mock_write, mock_restart, result = self._run({"count": 10, "unchecked_games": [100, 200]})
         mock_write.assert_not_called()
         mock_restart.assert_not_called()
+        self.assertFalse(result)
 
     def test_filters_unchecked_games_before_building_config(self):
         captured = {}
@@ -300,7 +355,7 @@ class TestDoAutoSync(unittest.TestCase):
         self.assertEqual(mock_write.call_args[0][0], expected)
 
     def test_partially_unchecked_games_still_syncs_remainder(self):
-        mock_write, mock_restart = self._run({"count": 10, "unchecked_games": [100]})
+        mock_write, mock_restart, _ = self._run({"count": 10, "unchecked_games": [100]})
         mock_write.assert_called_once()
         mock_restart.assert_called_once()
 
@@ -313,7 +368,6 @@ class TestDoAutoSync(unittest.TestCase):
         new_config.model_dump.return_value = same
         mock_write = MagicMock()
         mock_restart = MagicMock()
-        mock_log = MagicMock()
 
         with patch("server._load_settings", return_value=Settings(count=10)), \
              patch("server.get_recent_games", return_value=FAKE_GAMES), \
@@ -321,11 +375,10 @@ class TestDoAutoSync(unittest.TestCase):
              patch("server.load_sunshine_config", return_value=existing), \
              patch("server.build_sunshine_config", return_value=new_config), \
              patch("server._write_elevated", mock_write), \
-             patch("server._restart_elevated", mock_restart), \
-             patch("server._append_log", mock_log):
-            _do_auto_sync()
+             patch("server._restart_elevated", mock_restart):
+            result = _do_auto_sync()
 
-        return mock_write, mock_restart, mock_log
+        return mock_write, mock_restart, result
 
     def test_skips_write_when_config_unchanged(self):
         mock_write, _, _ = self._run_noop()
@@ -335,9 +388,82 @@ class TestDoAutoSync(unittest.TestCase):
         _, mock_restart, _ = self._run_noop()
         mock_restart.assert_not_called()
 
-    def test_logs_skipped_when_config_unchanged(self):
-        _, _, mock_log = self._run_noop()
-        mock_log.assert_called_once_with("auto", True, "No changes, sync skipped")
+    def test_returns_false_when_config_unchanged(self):
+        _, _, result = self._run_noop()
+        self.assertFalse(result)
+
+
+# ---------------------------------------------------------------------------
+# _schedule_sync — debouncing
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleSync(unittest.TestCase):
+    def setUp(self):
+        # Reset global timer state between tests.
+        with server._sync_timer_lock:
+            if server._sync_timer is not None:
+                server._sync_timer.cancel()
+                server._sync_timer = None
+
+    def test_debounces_rapid_calls(self):
+        """Multiple rapid calls should result in only one _try_auto_sync invocation."""
+        with patch("server._try_auto_sync") as mock_sync:
+            for _ in range(5):
+                _schedule_sync(delay=0.05)
+            time.sleep(0.2)
+        mock_sync.assert_called_once()
+
+    def test_fires_after_delay(self):
+        """A single call should fire _try_auto_sync after the delay."""
+        with patch("server._try_auto_sync") as mock_sync:
+            _schedule_sync(delay=0.05)
+            mock_sync.assert_not_called()   # not yet
+            time.sleep(0.2)
+        mock_sync.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# api_update_settings — sync triggering
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateSettingsTrigger(unittest.TestCase):
+    """Verify that api_update_settings calls _schedule_sync for sync-relevant fields."""
+
+    def _post(self, payload, mock_schedule):
+        with server.app.test_client() as client:
+            return client.post("/api/settings", json=payload)
+
+    def test_triggers_sync_on_unchecked_games(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync") as mock_schedule:
+            self._post({"unchecked_games": [100]}, mock_schedule)
+        mock_schedule.assert_called_once()
+
+    def test_triggers_sync_on_count(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync") as mock_schedule:
+            self._post({"count": 5}, mock_schedule)
+        mock_schedule.assert_called_once()
+
+    def test_triggers_sync_on_auto_sync(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync") as mock_schedule:
+            self._post({"auto_sync": True}, mock_schedule)
+        mock_schedule.assert_called_once()
+
+    def test_does_not_trigger_on_config_path(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync") as mock_schedule:
+            self._post({"config_path": r"C:\foo\apps.json"}, mock_schedule)
+        mock_schedule.assert_not_called()
+
+    def test_does_not_trigger_on_show_debug(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync") as mock_schedule:
+            self._post({"show_debug": True}, mock_schedule)
+        mock_schedule.assert_not_called()
 
 
 if __name__ == "__main__":

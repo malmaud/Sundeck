@@ -22,7 +22,10 @@ from absl import app as absl_app, flags
 from flask import Flask, Response, jsonify, request, send_from_directory
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator
 
-from steam import get_recent_games
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.observers import Observer
+
+from steam import get_recent_games, get_vdf_path
 from sunshine import (
     _detect_streaming_service,
     build_sunshine_config,
@@ -58,8 +61,7 @@ class Settings(BaseModel):
     unchecked_games: list[int] = Field(default_factory=list)
     show_debug: bool = False
     count: int = 10
-    auto_sync_hours: float = 0.0
-    last_sync_time: float = 0.0
+    auto_sync: bool = True
 
 
 class SettingsPatch(BaseModel):
@@ -67,7 +69,7 @@ class SettingsPatch(BaseModel):
     unchecked_games: list[int] | None = None
     show_debug: bool | None = None
     count: int | None = None
-    auto_sync_hours: float | None = None
+    auto_sync: bool | None = None
 
     @field_validator("config_path")
     @classmethod
@@ -83,11 +85,6 @@ class SettingsPatch(BaseModel):
     @classmethod
     def _clamp_count(cls, v: int | None) -> int | None:
         return max(1, v) if v is not None else None
-
-    @field_validator("auto_sync_hours")
-    @classmethod
-    def _clamp_auto_sync(cls, v: float | None) -> float | None:
-        return max(0.0, v) if v is not None else None
 
 
 class SyncLogEntry(BaseModel):
@@ -222,6 +219,9 @@ def api_update_settings() -> Response | tuple[Response, int]:
     if not updates:
         return jsonify({"error": "no recognised fields"}), 400
     _patch_settings(**updates)
+    # Sync-relevant fields changed → debounced auto-sync check.
+    if {"unchecked_games", "count", "auto_sync"} & updates.keys():
+        _schedule_sync()
     return jsonify({"status": "ok"})
 
 
@@ -264,6 +264,11 @@ def api_update_config() -> Response | tuple[Response, int]:
     _append_log("manual", True, f"Synced {len(app_ids)} games")
 
     return jsonify({"status": "ok", "count": len(app_ids)})
+
+
+@app.route("/api/sync-status")
+def api_sync_status() -> Response:
+    return jsonify({"state": _get_sync_state(), "games_version": _get_games_version()})
 
 
 @app.route("/api/log")
@@ -343,45 +348,124 @@ def _is_streaming_active() -> bool:
     return False
 
 
-def _do_auto_sync() -> None:
+def _do_auto_sync() -> bool:
+    """Run an auto-sync.  Return True if config was written + service restarted."""
     settings = _load_settings()
     unchecked = set(settings.unchecked_games)
     games = get_recent_games(settings.count)
     checked_games = [g for g in games if g.app_id not in unchecked]
     if not checked_games:
-        return
+        return False
     config_path = _load_config_path()
     existing = load_sunshine_config(config_path)
     config = build_sunshine_config(existing, checked_games)
     if config.model_dump() == existing.model_dump():
-        _append_log("auto", True, "No changes, sync skipped")
-        return
+        return False
     _write_elevated(config_path, config.model_dump_json(by_alias=True, indent=4))
     _restart_elevated()
+    return True
 
 
-_sync_stop = threading.Event()
+_DEBOUNCE_SECONDS = 5.0
+
+# "idle" | "pending" | "syncing"
+_sync_state = "idle"
+_sync_state_lock = threading.Lock()
+
+_games_version = 0
+_games_version_lock = threading.Lock()
 
 
-def _sync_worker() -> None:
-    """Background thread: performs auto-sync on the configured interval."""
-    while not _sync_stop.wait(timeout=60):
-        try:
-            settings = _load_settings()
-            if settings.auto_sync_hours <= 0:
-                continue
-            if time.time() < settings.last_sync_time + settings.auto_sync_hours * 3600:
-                continue
-            if _is_streaming_active():
-                continue
-        except Exception:
-            continue
-        try:
-            _do_auto_sync()
-            _patch_settings(last_sync_time=time.time())
+def _bump_games_version() -> None:
+    global _games_version
+    with _games_version_lock:
+        _games_version += 1
+
+
+def _get_games_version() -> int:
+    with _games_version_lock:
+        return _games_version
+
+
+def _set_sync_state(state: str) -> None:
+    global _sync_state
+    with _sync_state_lock:
+        _sync_state = state
+
+
+def _get_sync_state() -> str:
+    with _sync_state_lock:
+        return _sync_state
+
+
+def _try_auto_sync() -> None:
+    """Attempt an auto-sync if enabled; defer while streaming."""
+    try:
+        if not _load_settings().auto_sync:
+            _set_sync_state("idle")
+            return
+        if _is_streaming_active():
+            # Re-check after a short delay once the stream ends.
+            _schedule_sync(_DEBOUNCE_SECONDS)
+            return
+    except Exception:
+        _set_sync_state("idle")
+        return
+    _set_sync_state("syncing")
+    try:
+        if _do_auto_sync():
             _append_log("auto", True, "Synced games")
-        except Exception as exc:
-            _append_log("auto", False, str(exc).splitlines()[0] or "Auto-sync failed", detail=traceback.format_exc())
+    except Exception as exc:
+        _append_log("auto", False, str(exc).splitlines()[0] or "Auto-sync failed", detail=traceback.format_exc())
+    finally:
+        _set_sync_state("idle")
+
+
+_sync_timer: threading.Timer | None = None
+_sync_timer_lock = threading.Lock()
+
+
+def _schedule_sync(delay: float = _DEBOUNCE_SECONDS) -> None:
+    """Schedule a debounced auto-sync attempt *delay* seconds from now."""
+    global _sync_timer
+    _set_sync_state("pending")
+    with _sync_timer_lock:
+        if _sync_timer is not None:
+            _sync_timer.cancel()
+        _sync_timer = threading.Timer(delay, _try_auto_sync)
+        _sync_timer.daemon = True
+        _sync_timer.start()
+
+
+class _SyncEventHandler(FileSystemEventHandler):
+    """Triggers a debounced auto-sync when watched files change."""
+
+    def __init__(self, filenames: set[str]) -> None:
+        self._filenames = {f.lower() for f in filenames}
+
+    def on_modified(self, event: FileSystemEvent) -> None:  # type: ignore[override]
+        if event.is_directory:
+            return
+        if Path(str(event.src_path)).name.lower() in self._filenames:
+            _bump_games_version()
+            _schedule_sync()
+
+
+def _start_watchers() -> None:
+    """Start a watchdog observer for Steam's localconfig.vdf."""
+    vdf = get_vdf_path()
+    if vdf is None:
+        return
+
+    observer = Observer()
+    observer.schedule(
+        _SyncEventHandler({vdf.name}),
+        str(vdf.parent),
+        recursive=False,
+    )
+    observer.daemon = True
+    observer.start()
+    _schedule_sync(delay=0)
 
 
 def _check_port(port: int) -> None:
@@ -439,7 +523,7 @@ def _main(_argv):
         _check_port(port)
         webbrowser.open(f"http://localhost:{port}")
     else:
-        threading.Thread(target=_sync_worker, daemon=True).start()
+        _start_watchers()
     app.run(port=port, debug=True, threaded=True)
 
 
