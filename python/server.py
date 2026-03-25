@@ -80,6 +80,22 @@ def thumbnails(filename: str) -> Response:
     return send_from_directory(_THUMBNAIL_DIR, filename)
 
 
+def _thumbnail_data_uri(path: str) -> str:
+    try:
+        from PIL import Image
+        p = Path(path)
+        small = p.parent / f"{p.stem}_small.jpg"
+        if not small.exists():
+            img = Image.open(p).convert("RGB")
+            img.thumbnail((300, 450), Image.Resampling.LANCZOS)
+            img.save(small, format="JPEG", quality=85)
+        with open(small, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+        return f"data:image/jpeg;base64,{data}"
+    except Exception:
+        return ""
+
+
 @app.route("/api/games")
 def api_games() -> Response:
     count = request.args.get("count", 10, type=int)
@@ -89,9 +105,7 @@ def api_games() -> Response:
             {
                 "app_id": g.app_id,
                 "name": g.name,
-                "thumbnail": (
-                    f"/thumbnails/{Path(g.thumbnail).name}" if g.thumbnail else ""
-                ),
+                "thumbnail": _thumbnail_data_uri(g.thumbnail) if g.thumbnail else "",
                 "last_played": g.last_played,
             }
             for g in games
@@ -273,7 +287,7 @@ def _main(_argv):
     if not os.environ.get("WERKZEUG_RUN_MAIN"):
         _check_port(port)
         webbrowser.open(f"http://localhost:{port}")
-    app.run(port=port, debug=True)
+    app.run(port=port, debug=True, threaded=True)
 
 
 if __name__ == "__main__":

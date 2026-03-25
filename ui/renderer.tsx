@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import ReactDOM from "react-dom/client";
 
 interface Game {
@@ -86,6 +86,15 @@ async function apiUpdateConfig(appIds: number[]): Promise<{ status: string; coun
 }
 
 function GameCard({ game, checked, onToggle, willAdd, willRemove, showDebug }: GameCardProps) {
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    if (imgRef.current?.complete && imgRef.current.naturalWidth > 0) {
+      setImgLoaded(true);
+    }
+  }, []);
+
   let extra = "";
   if (willAdd) extra = " will-add";
   else if (willRemove) extra = " will-remove";
@@ -98,7 +107,16 @@ function GameCard({ game, checked, onToggle, willAdd, willRemove, showDebug }: G
         onChange={onToggle}
       />
       {game.thumbnail
-        ? <img src={game.thumbnail} alt={game.name} />
+        ? <>
+            <img
+              ref={imgRef}
+              src={game.thumbnail}
+              alt={game.name}
+              loading="lazy"
+              onLoad={() => setImgLoaded(true)}
+            />
+            {!imgLoaded && <div className="game-thumbnail-placeholder loading" aria-hidden="true" />}
+          </>
         : <div className="game-thumbnail-placeholder" aria-hidden="true" />
       }
       <div className="game-name-row">

@@ -239,7 +239,29 @@ main {
   color: #8888aa;
 }
 
-.game-thumbnail-placeholder::after {
+.game-thumbnail-placeholder.loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+}
+
+.game-thumbnail-placeholder.loading::after {
+  content: "";
+  width: 32px;
+  height: 32px;
+  border: 3px solid #1e3a5f;
+  border-top-color: #e94560;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.game-thumbnail-placeholder:not(.loading)::after {
   content: "?";
 }
 
