@@ -12,9 +12,9 @@ A local web app that keeps an Apollo/Sunshine game streaming config in sync with
 
 ## Architecture
 
-- `python/server.py` — Flask backend + sync logic
-- `python/steam.py` — reads `localconfig.vdf`, fetches game names/thumbnails
-- `python/sunshine.py` — reads/writes Apollo/Sunshine `apps.json`
+- `backend/server.py` — Flask backend + sync logic
+- `backend/steam.py` — reads `localconfig.vdf`, fetches game names/thumbnails
+- `backend/sunshine.py` — reads/writes Apollo/Sunshine `apps.json`
 - `ui/renderer.tsx` — React frontend (single file, bundled with esbuild)
 - `ui/styles.css` — styles
 
@@ -25,7 +25,7 @@ The UI is a static bundle served by Flask. There is no separate dev server.
 ### Run
 
 ```
-cd python
+cd backend
 uv run server.py
 ```
 
@@ -39,7 +39,7 @@ npm run build
 ### Run Python tests
 
 ```
-cd python
+cd backend
 uv run python -m unittest test_server -v
 ```
 
@@ -54,7 +54,7 @@ npx tsc --noEmit
 
 - When you finishing making changes to the ui, you should rebuild it before finishing your response.
 - `sync_log.json` is gitignored — it's a runtime file written next to the executable
-- Settings are stored in `settings.json` next to the executable (or `python/settings.json` in dev)
+- Settings are stored in `settings.json` next to the executable (or `backend/settings.json` in dev)
 - The server runs under Werkzeug's reloader; the sync watcher and browser open only start in the reloader child process (`WERKZEUG_RUN_MAIN` env var)
 
 ## Key design decisions

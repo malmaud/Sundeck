@@ -11,7 +11,7 @@ npm run build
 Pop-Location
 
 Write-Host "==> Bundling Python app with PyInstaller..."
-Push-Location "$ROOT\python"
+Push-Location "$ROOT\backend"
 uv run pyinstaller `
   --name steamlaunch `
   --onedir `

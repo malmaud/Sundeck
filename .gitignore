@@ -8,6 +8,6 @@ ui/node_modules/
 ui/renderer.bundle.js
 dist/
 build/
-python/settings.json
-python/name_cache.json
-python/sync_log.json
+backend/settings.json
+backend/name_cache.json
+backend/sync_log.json
