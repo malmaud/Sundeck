@@ -304,6 +304,41 @@ class TestDoAutoSync(unittest.TestCase):
         mock_write.assert_called_once()
         mock_restart.assert_called_once()
 
+    def _run_noop(self):
+        """Run _do_auto_sync where existing and new configs are identical."""
+        same = {"apps": []}
+        existing = MagicMock()
+        existing.model_dump.return_value = same
+        new_config = MagicMock()
+        new_config.model_dump.return_value = same
+        mock_write = MagicMock()
+        mock_restart = MagicMock()
+        mock_log = MagicMock()
+
+        with patch("server._load_settings", return_value=Settings(count=10)), \
+             patch("server.get_recent_games", return_value=FAKE_GAMES), \
+             patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("server.load_sunshine_config", return_value=existing), \
+             patch("server.build_sunshine_config", return_value=new_config), \
+             patch("server._write_elevated", mock_write), \
+             patch("server._restart_elevated", mock_restart), \
+             patch("server._append_log", mock_log):
+            _do_auto_sync()
+
+        return mock_write, mock_restart, mock_log
+
+    def test_skips_write_when_config_unchanged(self):
+        mock_write, _, _ = self._run_noop()
+        mock_write.assert_not_called()
+
+    def test_skips_restart_when_config_unchanged(self):
+        _, mock_restart, _ = self._run_noop()
+        mock_restart.assert_not_called()
+
+    def test_logs_skipped_when_config_unchanged(self):
+        _, _, mock_log = self._run_noop()
+        mock_log.assert_called_once_with("auto", True, "No changes, sync skipped")
+
 
 if __name__ == "__main__":
     unittest.main()

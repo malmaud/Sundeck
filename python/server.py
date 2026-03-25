@@ -249,8 +249,12 @@ def api_update_config() -> Response | tuple[Response, int]:
     apollo_config = _load_config_path()
     existing = load_sunshine_config(apollo_config)
     config = build_sunshine_config(existing, games)
-    config_json = config.model_dump_json(by_alias=True, indent=4)
 
+    if config.model_dump() == existing.model_dump():
+        _append_log("manual", True, "No changes, sync skipped")
+        return jsonify({"status": "ok", "count": len(app_ids)})
+
+    config_json = config.model_dump_json(by_alias=True, indent=4)
     try:
         _write_elevated(apollo_config, config_json)
         _restart_elevated()
@@ -349,6 +353,9 @@ def _do_auto_sync() -> None:
     config_path = _load_config_path()
     existing = load_sunshine_config(config_path)
     config = build_sunshine_config(existing, checked_games)
+    if config.model_dump() == existing.model_dump():
+        _append_log("auto", True, "No changes, sync skipped")
+        return
     _write_elevated(config_path, config.model_dump_json(by_alias=True, indent=4))
     _restart_elevated()
 
