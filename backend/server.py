@@ -41,11 +41,13 @@ if getattr(sys, "frozen", False):
     # Running as a PyInstaller bundle; data files are under sys._MEIPASS,
     # but thumbnails must be writable so store them next to the executable.
     _UI_DIR = Path(sys._MEIPASS) / "ui"  # type: ignore[attr-defined]
+    _IMAGES_DIR = Path(sys._MEIPASS) / "images"  # type: ignore[attr-defined]
     _THUMBNAIL_DIR = Path(sys.executable).parent / "thumbnails"
     _SETTINGS_FILE = Path(sys.executable).parent / "settings.json"
     _LOG_FILE = Path(sys.executable).parent / "sync_log.json"
 else:
     _UI_DIR = _PYTHON_DIR.parent / "ui"
+    _IMAGES_DIR = _PYTHON_DIR.parent / "images"
     _THUMBNAIL_DIR = _PYTHON_DIR / "thumbnails"
     _SETTINGS_FILE = _PYTHON_DIR / "settings.json"
     _LOG_FILE = _PYTHON_DIR / "sync_log.json"
@@ -162,6 +164,11 @@ app = Flask(__name__, static_folder=str(_UI_DIR), static_url_path="")
 @app.route("/")
 def index() -> Response:
     return send_from_directory(_UI_DIR, "index.html")
+
+
+@app.route("/images/<path:filename>")
+def images(filename: str) -> Response:
+    return send_from_directory(_IMAGES_DIR, filename)
 
 
 @app.route("/thumbnails/<path:filename>")

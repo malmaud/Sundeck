@@ -262,7 +262,10 @@ const [count, setCount] = useState(10);
     <>
       <header>
         <div className="header-row">
-        <h1>SteamLaunch</h1>
+        <div className="header-title">
+          <img src="/images/logo.png" className="header-logo" alt="SteamLaunch" />
+          <h1>SteamLaunch</h1>
+        </div>
         <div className="controls">
           <label>
             Number of recent games to sync:

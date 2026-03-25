@@ -4,6 +4,7 @@
   "description": "Steam game launcher UI for Apollo/Sunshine",
   "scripts": {
     "build": "esbuild renderer.tsx --bundle --outfile=renderer.bundle.js --platform=browser --format=iife --jsx=automatic",
+    "watch": "esbuild renderer.tsx --bundle --outfile=renderer.bundle.js --platform=browser --format=iife --jsx=automatic --watch=forever",
     "test": "jest"
   },
   "jest": {

@@ -11,3 +11,4 @@ build/
 backend/settings.json
 backend/name_cache.json
 backend/sync_log.json
+images

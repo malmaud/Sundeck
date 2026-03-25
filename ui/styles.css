@@ -66,6 +66,18 @@ header {
   min-width: 0;
 }
 
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-logo {
+  height: 36px;
+  width: 36px;
+  border-radius: 8px;
+}
+
 header h1 {
   font-size: 20px;
   font-weight: 600;
