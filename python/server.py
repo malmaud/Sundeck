@@ -42,29 +42,29 @@ _KNOWN_CONFIG_PATHS = [
 _DEFAULT_CONFIG_PATH = r"C:\Program Files\Apollo\config\apps.json"
 
 
-def _load_config_path() -> Path:
+def _load_settings_data() -> dict:
     if _SETTINGS_FILE.exists():
         try:
-            data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
-            if "config_path" in data:
-                return Path(data["config_path"])
+            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
+    return {}
+
+
+def _save_settings_data(updates: dict) -> None:
+    data = _load_settings_data()
+    data.update(updates)
+    _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _load_config_path() -> Path:
+    data = _load_settings_data()
+    if "config_path" in data:
+        return Path(data["config_path"])
     env = os.environ.get("APOLLO_CONFIG")
     if env:
         return Path(env)
     return Path(_DEFAULT_CONFIG_PATH)
-
-
-def _save_config_path(path: Path) -> None:
-    data: dict = {}
-    if _SETTINGS_FILE.exists():
-        try:
-            data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    data["config_path"] = str(path)
-    _SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 app = Flask(__name__, static_folder=str(_UI_DIR), static_url_path="")
@@ -115,19 +115,34 @@ def api_games() -> Response:
 
 @app.route("/api/settings", methods=["GET"])
 def api_get_settings() -> Response:
+    data = _load_settings_data()
     config_path = _load_config_path()
     suggestions = [p for p in _KNOWN_CONFIG_PATHS if Path(p).exists()]
-    return jsonify({"config_path": str(config_path), "suggestions": suggestions})
+    return jsonify({
+        "config_path": str(config_path),
+        "suggestions": suggestions,
+        "unchecked_games": data.get("unchecked_games", []),
+        "show_debug": data.get("show_debug", False),
+    })
 
 
 @app.route("/api/settings", methods=["POST"])
 def api_update_settings() -> Response | tuple[Response, int]:
     body = request.get_json(silent=True) or {}
-    config_path = body.get("config_path", "").strip()
-    if not config_path:
-        return jsonify({"error": "config_path required"}), 400
-    _save_config_path(Path(config_path))
-    return jsonify({"status": "ok", "config_path": config_path})
+    updates: dict = {}
+    if "config_path" in body:
+        config_path = body["config_path"].strip()
+        if not config_path:
+            return jsonify({"error": "config_path cannot be empty"}), 400
+        updates["config_path"] = config_path
+    if "unchecked_games" in body:
+        updates["unchecked_games"] = [int(i) for i in body["unchecked_games"]]
+    if "show_debug" in body:
+        updates["show_debug"] = bool(body["show_debug"])
+    if not updates:
+        return jsonify({"error": "no recognised fields"}), 400
+    _save_settings_data(updates)
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/restart", methods=["POST"])

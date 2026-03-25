@@ -16,6 +16,8 @@ interface ConfigApp {
 interface Settings {
   config_path: string;
   suggestions: string[];
+  unchecked_games: number[];
+  show_debug: boolean;
 }
 
 interface Status {
@@ -30,20 +32,6 @@ interface GameCardProps {
   willAdd: boolean;
   willRemove: boolean;
   showDebug: boolean;
-}
-
-const UNCHECKED_KEY = "uncheckedGames";
-
-function loadUnchecked(): Set<number> {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(UNCHECKED_KEY) || "[]"));
-  } catch {
-    return new Set();
-  }
-}
-
-function saveUnchecked(unchecked: Set<number>): void {
-  localStorage.setItem(UNCHECKED_KEY, JSON.stringify([...unchecked]));
 }
 
 async function apiGetGames(count: number): Promise<Game[]> {
@@ -64,11 +52,11 @@ async function apiGetSettings(): Promise<Settings> {
   return res.json() as Promise<Settings>;
 }
 
-async function apiSaveSettings(configPath: string): Promise<void> {
+async function apiPatchSettings(updates: Partial<Omit<Settings, "suggestions">>): Promise<void> {
   const res = await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ config_path: configPath }),
+    body: JSON.stringify(updates),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -142,27 +130,23 @@ function App() {
   const [countInput, setCountInput] = useState("10");
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
-  const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [] });
+  const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [], unchecked_games: [], show_debug: false });
   const [configPathInput, setConfigPathInput] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [showDebug, setShowDebug] = useState(() =>
-    localStorage.getItem("showDebug") === "true"
-  );
+  const [showDebug, setShowDebug] = useState(false);
 
   const loadGames = useCallback(async (n = count) => {
     setBusy(true);
     setStatus({ msg: "Loading games...", type: "loading" });
     try {
-      const [result, currentConfig] = await Promise.all([
+      const [result, currentConfig, s] = await Promise.all([
         apiGetGames(n),
         apiGetConfig(),
+        apiGetSettings(),
       ]);
-      const unchecked = loadUnchecked();
-      const checked = new Set(
-        result.filter((g) => !unchecked.has(g.app_id)).map((g) => g.app_id)
-      );
+      const unchecked = new Set<number>(s.unchecked_games);
       setGames(result);
-      setCheckedIds(checked);
+      setCheckedIds(new Set(result.filter((g) => !unchecked.has(g.app_id)).map((g) => g.app_id)));
       setConfigApps(currentConfig);
       setStatus(null);
     } catch (e) {
@@ -177,13 +161,14 @@ function App() {
     apiGetSettings().then((s) => {
       setSettings(s);
       setConfigPathInput(s.config_path);
+      setShowDebug(s.show_debug);
     }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSaveSettings(): Promise<void> {
     setBusy(true);
     try {
-      await apiSaveSettings(configPathInput);
+      await apiPatchSettings({ config_path: configPathInput });
       const s = await apiGetSettings();
       setSettings(s);
       setConfigPathInput(s.config_path);
@@ -199,15 +184,13 @@ function App() {
   function toggleGame(appId: number): void {
     setCheckedIds((prev) => {
       const next = new Set(prev);
-      const unchecked = loadUnchecked();
       if (next.has(appId)) {
         next.delete(appId);
-        unchecked.add(appId);
       } else {
         next.add(appId);
-        unchecked.delete(appId);
       }
-      saveUnchecked(unchecked);
+      const unchecked = games.filter((g) => !next.has(g.app_id)).map((g) => g.app_id);
+      apiPatchSettings({ unchecked_games: unchecked }).catch(() => {});
       return next;
     });
   }
@@ -311,7 +294,7 @@ function App() {
                 checked={showDebug}
                 onChange={(e) => {
                   setShowDebug(e.target.checked);
-                  localStorage.setItem("showDebug", String(e.target.checked));
+                  apiPatchSettings({ show_debug: e.target.checked }).catch(() => {});
                 }}
               />
               Show debug information
