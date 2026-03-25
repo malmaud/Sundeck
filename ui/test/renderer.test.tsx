@@ -45,17 +45,45 @@ const DEFAULT_SETTINGS = {
   auto_sync: true,
 };
 
-const DEFAULT_SYNC_STATUS = { state: "idle", games_version: 0 };
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  private listeners: Record<string, Array<(e: MessageEvent) => void>> = {};
+  closed = false;
+  readonly url: string;
+
+  constructor(url: string) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, fn: (e: MessageEvent) => void): void {
+    (this.listeners[type] ??= []).push(fn);
+  }
+
+  dispatch(type: string, data: unknown): void {
+    const event = new MessageEvent(type, { data: JSON.stringify(data) });
+    (this.listeners[type] ?? []).forEach(fn => fn(event));
+  }
+
+  close(): void { this.closed = true; }
+
+  static latest(): MockEventSource {
+    return MockEventSource.instances[MockEventSource.instances.length - 1];
+  }
+
+  static reset(): void { MockEventSource.instances = []; }
+}
 
 beforeEach(() => {
   jest.useFakeTimers();
+  MockEventSource.reset();
+  (globalThis as any).EventSource = MockEventSource;
   mockFetch({
     "GET /api/games": () => ({ body: GAMES }),
     "GET /api/config": () => ({ body: [] }),
     "POST /api/config": () => ({ body: { status: "ok", count: 2 } }),
     "GET /api/settings": () => ({ body: DEFAULT_SETTINGS }),
     "POST /api/settings": () => ({ body: { status: "ok" } }),
-    "GET /api/sync-status": () => ({ body: DEFAULT_SYNC_STATUS }),
     "GET /api/log": () => ({ body: [] }),
   });
 });
@@ -108,7 +136,6 @@ describe("manual sync", () => {
       "GET /api/games": () => ({ body: GAMES }),
       "GET /api/config": () => ({ body: [] }),
       "GET /api/settings": () => ({ body: DEFAULT_SETTINGS }),
-      "GET /api/sync-status": () => ({ body: DEFAULT_SYNC_STATUS }),
       "GET /api/log": () => ({ body: [] }),
       "POST /api/config": () => ({ status: 500, body: { error: "Access denied" } }),
     });
@@ -150,7 +177,6 @@ describe("manual sync", () => {
       "GET /api/games": () => ({ body: GAMES }),
       "GET /api/config": () => ({ body: [] }),
       "GET /api/settings": () => ({ body: DEFAULT_SETTINGS }),
-      "GET /api/sync-status": () => ({ body: DEFAULT_SYNC_STATUS }),
       "GET /api/log": () => ({ body: [] }),
       "POST /api/config": () => ({ status: 500, body: { error: "oops" } }),
     });
@@ -223,27 +249,15 @@ describe("sync status indicator", () => {
     expect(screen.queryByText("Syncing…")).toBeNull();
   });
 
-  test("shown when sync-status is pending", async () => {
-    mockFetch({
-      "GET /api/games": () => ({ body: GAMES }),
-      "GET /api/config": () => ({ body: [] }),
-      "GET /api/settings": () => ({ body: DEFAULT_SETTINGS }),
-      "GET /api/sync-status": () => ({ body: { state: "pending", games_version: 0 } }),
-      "GET /api/log": () => ({ body: [] }),
-    });
+  test("shown when SSE delivers pending state", async () => {
     await renderApp();
+    act(() => { MockEventSource.latest().dispatch("sync_status", { state: "pending", games_version: 0 }); });
     await screen.findByText("Syncing…");
   });
 
-  test("shown when sync-status is syncing", async () => {
-    mockFetch({
-      "GET /api/games": () => ({ body: GAMES }),
-      "GET /api/config": () => ({ body: [] }),
-      "GET /api/settings": () => ({ body: DEFAULT_SETTINGS }),
-      "GET /api/sync-status": () => ({ body: { state: "syncing", games_version: 0 } }),
-      "GET /api/log": () => ({ body: [] }),
-    });
+  test("shown when SSE delivers syncing state", async () => {
     await renderApp();
+    act(() => { MockEventSource.latest().dispatch("sync_status", { state: "syncing", games_version: 0 }); });
     await screen.findByText("Syncing…");
   });
 
@@ -259,7 +273,6 @@ describe("sync status indicator", () => {
       "GET /api/games": () => ({ body: GAMES }),
       "GET /api/config": () => ({ body: [] }),
       "GET /api/settings": () => ({ body: { ...DEFAULT_SETTINGS, auto_sync: false } }),
-      "GET /api/sync-status": () => ({ body: DEFAULT_SYNC_STATUS }),
       "GET /api/log": () => ({ body: [] }),
       "POST /api/settings": () => ({ body: { status: "ok" } }),
     });
@@ -275,19 +288,15 @@ describe("sync status indicator", () => {
 // ---------------------------------------------------------------------------
 
 describe("games_version refresh", () => {
-  test("reloads game list when games_version increments", async () => {
+  test("reloads game list when games_version increments via SSE", async () => {
     const UPDATED_GAMES = [
       { app_id: 100, name: "Half-Life", thumbnail: "" },
       { app_id: 300, name: "Portal 2", thumbnail: "" },
     ];
-    let version = 0;
     let gameList = GAMES;
 
     (globalThis as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
       const method = (opts && opts.method) || "GET";
-      if (url.includes("/api/sync-status")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ state: "idle", games_version: version }) });
-      }
       if (url.includes("/api/games")) {
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(gameList) });
       }
@@ -298,12 +307,13 @@ describe("games_version refresh", () => {
     await renderApp();
     expect(screen.getByText("Portal")).toBeInTheDocument();
 
-    // Simulate vdf change: bump version and swap game list
-    version = 1;
-    gameList = UPDATED_GAMES;
+    // First event establishes the baseline version (no reload since prevGamesVersion starts null)
+    act(() => { MockEventSource.latest().dispatch("sync_status", { state: "idle", games_version: 0 }); });
+    await waitFor(() => {});
 
-    // Advance timers to trigger the 2s poll
-    act(() => { jest.advanceTimersByTime(2000); });
+    // Bump version and update game list, then fire SSE event
+    gameList = UPDATED_GAMES;
+    act(() => { MockEventSource.latest().dispatch("sync_status", { state: "idle", games_version: 1 }); });
 
     await screen.findByText("Portal 2");
     expect(screen.queryByText("Portal")).toBeNull();
@@ -314,19 +324,86 @@ describe("games_version refresh", () => {
     (globalThis as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
       const method = (opts && opts.method) || "GET";
       if (url.includes("/api/games")) gameListFetchCount++;
-      if (url.includes("/api/sync-status")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ state: "idle", games_version: 0 }) });
-      }
       const body = url.includes("/api/settings") && method === "GET" ? DEFAULT_SETTINGS : GAMES;
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
     });
 
     await renderApp();
-    const fetchesAfterLoad = gameListFetchCount;
 
-    act(() => { jest.advanceTimersByTime(2000); });
-    await waitFor(() => {}); // flush
+    // Establish baseline version
+    act(() => { MockEventSource.latest().dispatch("sync_status", { state: "idle", games_version: 0 }); });
+    await waitFor(() => {});
+    const fetchesAfterBaseline = gameListFetchCount;
 
-    expect(gameListFetchCount).toBe(fetchesAfterLoad); // no extra fetch
+    // Same version again — no reload
+    act(() => { MockEventSource.latest().dispatch("sync_status", { state: "idle", games_version: 0 }); });
+    await waitFor(() => {});
+
+    expect(gameListFetchCount).toBe(fetchesAfterBaseline);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSE connection
+// ---------------------------------------------------------------------------
+
+describe("SSE connection", () => {
+  test("connects to /api/events on mount", async () => {
+    await renderApp();
+    expect(MockEventSource.latest().url).toBe("/api/events");
+  });
+
+  test("closes EventSource on unmount", async () => {
+    const { unmount } = render(<App />);
+    await screen.findByText("Half-Life");
+    const es = MockEventSource.latest();
+    unmount();
+    expect(es.closed).toBe(true);
+  });
+
+  test("hides syncing indicator when SSE delivers idle after syncing", async () => {
+    await renderApp();
+    const es = MockEventSource.latest();
+    act(() => { es.dispatch("sync_status", { state: "syncing", games_version: 0 }); });
+    await screen.findByText("Syncing…");
+    act(() => { es.dispatch("sync_status", { state: "idle", games_version: 0 }); });
+    await waitFor(() => expect(screen.queryByText("Syncing…")).toBeNull());
+  });
+
+  test("refreshes log when SSE delivers log_updated", async () => {
+    let logFetchCount = 0;
+    (globalThis as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
+      const method = (opts && opts.method) || "GET";
+      if (url.includes("/api/log")) logFetchCount++;
+      const body = url.includes("/api/settings") && method === "GET" ? DEFAULT_SETTINGS
+        : url.includes("/api/games") ? GAMES : [];
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    });
+
+    await renderApp();
+    const countAfterMount = logFetchCount;
+
+    act(() => { MockEventSource.latest().dispatch("log_updated", {}); });
+    await waitFor(() => expect(logFetchCount).toBeGreaterThan(countAfterMount));
+  });
+
+  test("refreshes log when sync transitions from syncing to idle", async () => {
+    let logFetchCount = 0;
+    (globalThis as any).fetch = jest.fn((url: string, opts?: RequestInit) => {
+      const method = (opts && opts.method) || "GET";
+      if (url.includes("/api/log")) logFetchCount++;
+      const body = url.includes("/api/settings") && method === "GET" ? DEFAULT_SETTINGS
+        : url.includes("/api/games") ? GAMES : [];
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    });
+
+    await renderApp();
+    const es = MockEventSource.latest();
+
+    act(() => { es.dispatch("sync_status", { state: "syncing", games_version: 0 }); });
+    const countBeforeIdle = logFetchCount;
+
+    act(() => { es.dispatch("sync_status", { state: "idle", games_version: 0 }); });
+    await waitFor(() => expect(logFetchCount).toBeGreaterThan(countBeforeIdle));
   });
 });

@@ -1,4 +1,6 @@
 """Tests for server.py — streaming detection, auto-sync logic, and file watcher."""
+import json
+import queue
 import threading
 import time
 import unittest
@@ -26,39 +28,43 @@ class TestIsStreamingActive(unittest.TestCase):
         with patch("server.subprocess.check_output", return_value=output):
             return _is_streaming_active()
 
-    def test_returns_false_with_no_streaming_connections(self):
+    def test_returns_false_with_no_streaming_ports_bound(self):
         self.assertFalse(self._netstat(
-            "  TCP  0.0.0.0:47990   0.0.0.0:0   LISTENING\n"
+            "  UDP    0.0.0.0:47990          *:*\n"
         ))
 
-    def test_returns_true_when_rtsp_port_established(self):
+    def test_returns_true_when_video_port_bound(self):
         self.assertTrue(self._netstat(
-            "  TCP  192.168.1.2:48010  192.168.1.5:54321  ESTABLISHED\n"
+            "  UDP    0.0.0.0:47998          *:*\n"
         ))
 
-    def test_returns_true_when_video_port_established(self):
+    def test_returns_true_when_control_port_bound(self):
         self.assertTrue(self._netstat(
-            "  TCP  192.168.1.2:47998  192.168.1.5:54321  ESTABLISHED\n"
+            "  UDP    0.0.0.0:47999          *:*\n"
         ))
 
-    def test_returns_true_when_control_port_established(self):
+    def test_returns_true_when_audio_port_bound(self):
         self.assertTrue(self._netstat(
-            "  TCP  192.168.1.2:47999  192.168.1.5:54321  ESTABLISHED\n"
+            "  UDP    0.0.0.0:48000          *:*\n"
         ))
 
-    def test_returns_true_when_audio_port_established(self):
+    def test_returns_true_when_streaming_port_among_multiple_lines(self):
         self.assertTrue(self._netstat(
-            "  TCP  192.168.1.2:48000  192.168.1.5:54321  ESTABLISHED\n"
+            "  UDP    0.0.0.0:5353           *:*\n"
+            "  UDP    0.0.0.0:47998          *:*\n"
+            "  UDP    0.0.0.0:1900           *:*\n"
         ))
 
-    def test_returns_false_when_streaming_port_in_time_wait(self):
+    def test_returns_false_when_only_tcp_lines_present(self):
+        # The function only inspects UDP output; TCP lines are ignored
         self.assertFalse(self._netstat(
-            "  TCP  192.168.1.2:48010  192.168.1.5:54321  TIME_WAIT\n"
+            "  TCP    0.0.0.0:47998          0.0.0.0:0   LISTENING\n"
         ))
 
-    def test_returns_false_when_streaming_port_only_listening(self):
+    def test_returns_false_when_only_non_streaming_udp_ports_bound(self):
         self.assertFalse(self._netstat(
-            "  TCP  0.0.0.0:48010  0.0.0.0:0  LISTENING\n"
+            "  UDP    0.0.0.0:5353           *:*\n"
+            "  UDP    0.0.0.0:1900           *:*\n"
         ))
 
     def test_returns_false_on_subprocess_error(self):
@@ -68,9 +74,9 @@ class TestIsStreamingActive(unittest.TestCase):
     def test_returns_false_with_empty_output(self):
         self.assertFalse(self._netstat(""))
 
-    def test_established_on_unrelated_port_does_not_trigger(self):
+    def test_unrelated_udp_port_does_not_trigger(self):
         self.assertFalse(self._netstat(
-            "  TCP  192.168.1.2:5000  192.168.1.5:54321  ESTABLISHED\n"
+            "  UDP    0.0.0.0:5000           *:*\n"
         ))
 
 
@@ -464,6 +470,168 @@ class TestUpdateSettingsTrigger(unittest.TestCase):
              patch("server._schedule_sync") as mock_schedule:
             self._post({"show_debug": True}, mock_schedule)
         mock_schedule.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SSE — _sse_push
+# ---------------------------------------------------------------------------
+
+
+class TestSsePush(unittest.TestCase):
+    def setUp(self):
+        with server._sse_lock:
+            server._sse_subscribers.clear()
+
+    def tearDown(self):
+        with server._sse_lock:
+            server._sse_subscribers.clear()
+
+    def test_delivers_message_to_subscriber(self):
+        q = queue.SimpleQueue()
+        with server._sse_lock:
+            server._sse_subscribers.add(q)
+        server._sse_push("my_event", '{"x": 1}')
+        msg = q.get_nowait()
+        self.assertIn("event: my_event", msg)
+        self.assertIn('"x": 1', msg)
+
+    def test_delivers_to_all_subscribers(self):
+        q1, q2 = queue.SimpleQueue(), queue.SimpleQueue()
+        with server._sse_lock:
+            server._sse_subscribers.update({q1, q2})
+        server._sse_push("ev", "data")
+        self.assertFalse(q1.empty())
+        self.assertFalse(q2.empty())
+
+    def test_no_error_with_no_subscribers(self):
+        server._sse_push("ev", "data")  # must not raise
+
+    def test_removes_dead_subscriber(self):
+        dead = MagicMock()
+        dead.put_nowait.side_effect = Exception("broken pipe")
+        with server._sse_lock:
+            server._sse_subscribers.add(dead)
+        server._sse_push("ev", "data")
+        self.assertNotIn(dead, server._sse_subscribers)
+
+    def test_message_ends_with_double_newline(self):
+        q = queue.SimpleQueue()
+        with server._sse_lock:
+            server._sse_subscribers.add(q)
+        server._sse_push("ev", "payload")
+        msg = q.get_nowait()
+        self.assertTrue(msg.endswith("\n\n"))
+
+
+# ---------------------------------------------------------------------------
+# SSE — state-change side effects
+# ---------------------------------------------------------------------------
+
+
+class TestSseStateChangeSideEffects(unittest.TestCase):
+    def setUp(self):
+        with server._sse_lock:
+            server._sse_subscribers.clear()
+        _set_sync_state("idle")
+
+    def tearDown(self):
+        with server._sse_lock:
+            server._sse_subscribers.clear()
+
+    def _subscribe(self):
+        q = queue.SimpleQueue()
+        with server._sse_lock:
+            server._sse_subscribers.add(q)
+        return q
+
+    def test_set_sync_state_pushes_sync_status_event(self):
+        q = self._subscribe()
+        _set_sync_state("syncing")
+        msg = q.get_nowait()
+        self.assertIn("event: sync_status", msg)
+        data = json.loads(msg.split("data: ")[1].strip())
+        self.assertEqual(data["state"], "syncing")
+
+    def test_bump_games_version_pushes_sync_status_event(self):
+        q = self._subscribe()
+        server._bump_games_version()
+        msg = q.get_nowait()
+        self.assertIn("event: sync_status", msg)
+        data = json.loads(msg.split("data: ")[1].strip())
+        self.assertIn("games_version", data)
+
+    def test_append_log_pushes_log_updated_event(self):
+        q = self._subscribe()
+        with patch("server._save_log"):
+            server._append_log("auto", True, "Synced games")
+        msg = q.get_nowait()
+        self.assertIn("event: log_updated", msg)
+
+
+# ---------------------------------------------------------------------------
+# SSE — /api/events route
+# ---------------------------------------------------------------------------
+
+
+class TestApiEventsRoute(unittest.TestCase):
+    def setUp(self):
+        with server._sse_lock:
+            server._sse_subscribers.clear()
+        _set_sync_state("idle")
+
+    def tearDown(self):
+        with server._sse_lock:
+            server._sse_subscribers.clear()
+
+    def _open_stream(self):
+        """Return (gen, first_chunk) — caller must call gen.close() when done."""
+        with server.app.test_request_context("/api/events"):
+            resp = server.api_events()
+        gen = resp.response
+        first = next(gen)
+        if isinstance(first, bytes):
+            first = first.decode()
+        return gen, first, resp
+
+    def test_content_type_is_event_stream(self):
+        gen, _, resp = self._open_stream()
+        gen.close()
+        self.assertEqual(resp.mimetype, "text/event-stream")
+
+    def test_initial_chunk_is_sync_status_event(self):
+        gen, first, _ = self._open_stream()
+        gen.close()
+        self.assertIn("event: sync_status", first)
+
+    def test_initial_chunk_contains_state_and_version(self):
+        _set_sync_state("pending")
+        gen, first, _ = self._open_stream()
+        gen.close()
+        data = json.loads(first.split("data: ")[1].strip())
+        self.assertEqual(data["state"], "pending")
+        self.assertIn("games_version", data)
+
+    def test_subscriber_registered_after_first_yield(self):
+        initial = len(server._sse_subscribers)
+        gen, _, _ = self._open_stream()
+        self.assertEqual(len(server._sse_subscribers), initial + 1)
+        gen.close()
+
+    def test_subscriber_removed_on_close(self):
+        gen, _, _ = self._open_stream()
+        count_open = len(server._sse_subscribers)
+        gen.close()
+        self.assertEqual(len(server._sse_subscribers), count_open - 1)
+
+    def test_pushed_event_appears_in_stream(self):
+        gen, _, _ = self._open_stream()
+        server._sse_push("custom_event", '{"hello": "world"}')
+        chunk = next(gen)
+        gen.close()
+        if isinstance(chunk, bytes):
+            chunk = chunk.decode()
+        self.assertIn("event: custom_event", chunk)
+        self.assertIn('"hello": "world"', chunk)
 
 
 if __name__ == "__main__":

@@ -59,11 +59,6 @@ async function apiPatchSettings(updates: Partial<Omit<Settings, "suggestions">>)
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 }
 
-async function apiGetSyncStatus(): Promise<{ state: string; games_version: number }> {
-  const res = await fetch("/api/sync-status");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<{ state: string; games_version: number }>;
-}
 
 async function apiGetLog(): Promise<LogEntry[]> {
   const res = await fetch("/api/log");
@@ -157,8 +152,6 @@ const [count, setCount] = useState(10);
   useEffect(() => {
     if (!logOpen) return;
     refreshLog();
-    const id = setInterval(refreshLog, 10_000);
-    return () => clearInterval(id);
   }, [logOpen, refreshLog]);
 
   const loadGames = useCallback(async (n = count) => {
@@ -181,22 +174,26 @@ const [count, setCount] = useState(10);
   }, [count]);
 
   useEffect(() => {
-    function poll() {
-      apiGetSyncStatus().then(({ state, games_version }) => {
-        setSyncState(state);
-        if (prevSyncState.current === "syncing" && state === "idle") {
-          refreshLog();
-        }
-        prevSyncState.current = state;
-        if (prevGamesVersion.current !== null && games_version !== prevGamesVersion.current) {
-          loadGames();
-        }
-        prevGamesVersion.current = games_version;
-      }).catch(() => {});
-    }
-    poll();
-    const id = setInterval(poll, 2_000);
-    return () => clearInterval(id);
+    const es = new EventSource("/api/events");
+
+    es.addEventListener("sync_status", (e: MessageEvent) => {
+      const { state, games_version } = JSON.parse(e.data) as { state: string; games_version: number };
+      setSyncState(state);
+      if (prevSyncState.current === "syncing" && state === "idle") {
+        refreshLog();
+      }
+      prevSyncState.current = state;
+      if (prevGamesVersion.current !== null && games_version !== prevGamesVersion.current) {
+        loadGames();
+      }
+      prevGamesVersion.current = games_version;
+    });
+
+    es.addEventListener("log_updated", () => {
+      refreshLog();
+    });
+
+    return () => es.close();
   }, [refreshLog, loadGames]);
 
   useEffect(() => {

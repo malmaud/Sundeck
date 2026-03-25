@@ -6,9 +6,11 @@ Then open:  http://localhost:5000
 
 import base64
 import ctypes
+import json
 import logging
 import logging.handlers
 import os
+import queue
 import traceback
 import re
 import socket
@@ -141,6 +143,7 @@ def _append_log(kind: str, success: bool, message: str, detail: str = "") -> Non
         _sync_log.append(SyncLogEntry(timestamp=time.time(), kind=kind, success=success, message=message, detail=detail))
         del _sync_log[:-_LOG_MAX]
         _save_log(_sync_log)
+    _sse_push("log_updated", "{}")
 
 
 def _load_settings() -> Settings:
@@ -423,6 +426,7 @@ def _bump_games_version() -> None:
     global _games_version
     with _games_version_lock:
         _games_version += 1
+    _sse_push_sync_status()
 
 
 def _get_games_version() -> int:
@@ -434,11 +438,61 @@ def _set_sync_state(state: str) -> None:
     global _sync_state
     with _sync_state_lock:
         _sync_state = state
+    _sse_push_sync_status()
 
 
 def _get_sync_state() -> str:
     with _sync_state_lock:
         return _sync_state
+
+
+# ── Server-Sent Events ────────────────────────────────────────────────────────
+
+_sse_subscribers: set[queue.SimpleQueue] = set()
+_sse_lock = threading.Lock()
+
+
+def _sse_push(event: str, data: str) -> None:
+    msg = f"event: {event}\ndata: {data}\n\n"
+    with _sse_lock:
+        dead = set()
+        for q in _sse_subscribers:
+            try:
+                q.put_nowait(msg)
+            except Exception:
+                dead.add(q)
+        _sse_subscribers.difference_update(dead)
+
+
+def _sse_push_sync_status() -> None:
+    _sse_push("sync_status", json.dumps({
+        "state": _get_sync_state(),
+        "games_version": _get_games_version(),
+    }))
+
+
+@app.route("/api/events")
+def api_events() -> Response:
+    def stream():
+        q: queue.SimpleQueue = queue.SimpleQueue()
+        with _sse_lock:
+            _sse_subscribers.add(q)
+        try:
+            yield f"event: sync_status\ndata: {json.dumps({'state': _get_sync_state(), 'games_version': _get_games_version()})}\n\n"
+            while True:
+                try:
+                    yield q.get(timeout=30)
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            with _sse_lock:
+                _sse_subscribers.discard(q)
+
+    return Response(
+        stream(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _try_auto_sync() -> None:
