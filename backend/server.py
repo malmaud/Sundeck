@@ -379,41 +379,59 @@ def _restart_elevated() -> None:
     _run_elevated(f"net stop {service}; net start {service}")
 
 
+# ── Apollo session detection via log file parsing ─────────────────────────────
+
+# Log messages that indicate an app is still running (even if client disconnected)
+_APP_RUNNING_PATTERNS = [
+    "Launching app",
+    "Session pausing for app",
+    "Session resuming for app",
+    "Treating the app as a detached command",
+]
+# Log messages that indicate the app has terminated
+_APP_STOPPED_PATTERNS = [
+    "Process terminated",  # stream.cpp — control stream detected process exit
+    "All app processes have successfully exited",
+    "Forcefully terminating the app",
+    "App did not respond to a graceful termination request",
+    "No graceful exit timeout was specified",
+    "Terminating app",  # terminate_on_pause path
+    "Session already stopped",
+]
+
+
 def _is_streaming_active() -> bool:
-    """Return True if an active Sunshine/Apollo stream is detected.
+    """Return True if Apollo has a running app (even without an active client connection).
 
-    Apollo's HTTP /serverinfo (port 47989) always returns currentgame=0
-    by design — only the HTTPS endpoint returns the real value, but that
-    requires mutual TLS with a paired client certificate.
-
-    Instead, we check whether Apollo's streaming UDP ports are bound.
-    These ports (video/control/audio at base+9/+10/+11) are only opened
-    when an active streaming session exists.
+    Parses Apollo's log file to find the most recent session lifecycle event.
+    This works without any API credentials — just reads the log from disk.
     """
-    # Default base port 47989; streaming offsets from Apollo source (stream.h):
-    #   VIDEO_STREAM_PORT = 9, CONTROL_PORT = 10, AUDIO_STREAM_PORT = 11
-    streaming_ports = {47998, 47999, 48000}
-    try:
-        out = subprocess.check_output(
-            ["netstat", "-ano", "-p", "UDP"],
-            text=True,
-            creationflags=0x08000000,  # CREATE_NO_WINDOW
-        )
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] == "UDP":
-                try:
-                    port = int(parts[1].rsplit(":", 1)[1])
-                except (ValueError, IndexError):
-                    continue
-                if port in streaming_ports:
-                    _slog.debug("_is_streaming_active: UDP port %d bound, streaming active", port)
+    log_dir = _load_config_path().parent
+    # Check current log first, then backup (most recent events are at the end)
+    log_files = [log_dir / "sunshine.log", log_dir / "sunshine.log.backup"]
+
+    for log_file in log_files:
+        if not log_file.exists():
+            continue
+        try:
+            lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception as e:
+            _slog.warning("_is_streaming_active: failed to read %s: %s", log_file, e)
+            continue
+
+        # Scan backwards for the most recent lifecycle event
+        for line in reversed(lines):
+            for pattern in _APP_RUNNING_PATTERNS:
+                if pattern in line:
+                    _slog.debug("_is_streaming_active: app running (matched %r in %s)", pattern, log_file.name)
                     return True
-        _slog.debug("_is_streaming_active: no streaming UDP ports bound, inactive")
-        return False
-    except Exception as e:
-        _slog.warning("_is_streaming_active: check failed (%s), assuming inactive", e)
-        return False
+            for pattern in _APP_STOPPED_PATTERNS:
+                if pattern in line:
+                    _slog.debug("_is_streaming_active: app stopped (matched %r in %s)", pattern, log_file.name)
+                    return False
+
+    _slog.debug("_is_streaming_active: no session events found in logs, assuming inactive")
+    return False
 
 
 def _do_auto_sync() -> bool:

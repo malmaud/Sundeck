@@ -1,6 +1,7 @@
 """Tests for server.py — streaming detection, auto-sync logic, and file watcher."""
 import json
 import queue
+import tempfile
 import threading
 import time
 import unittest
@@ -19,65 +20,134 @@ FAKE_GAMES = [
 
 
 # ---------------------------------------------------------------------------
-# _is_streaming_active
+# _is_streaming_active (log-file-based detection)
 # ---------------------------------------------------------------------------
 
 
 class TestIsStreamingActive(unittest.TestCase):
-    def _netstat(self, output):
-        with patch("server.subprocess.check_output", return_value=output):
+    """Tests for Apollo session detection via log file parsing."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._log_dir = Path(self._tmpdir.name)
+        self._log_file = self._log_dir / "sunshine.log"
+        self._log_backup = self._log_dir / "sunshine.log.backup"
+        self._config_path = self._log_dir / "apps.json"
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _check(self, log_content="", backup_content=None):
+        """Write log content and call _is_streaming_active."""
+        if log_content:
+            self._log_file.write_text(log_content, encoding="utf-8")
+        if backup_content is not None:
+            self._log_backup.write_text(backup_content, encoding="utf-8")
+        with patch("server._load_config_path", return_value=self._config_path):
             return _is_streaming_active()
 
-    def test_returns_false_with_no_streaming_ports_bound(self):
-        self.assertFalse(self._netstat(
-            "  UDP    0.0.0.0:47990          *:*\n"
+    def test_returns_true_when_app_launched(self):
+        self.assertTrue(self._check(
+            '[2026-03-26 10:00:00]: Info: Launching app [440] with UUID [abc-123]\n'
         ))
 
-    def test_returns_true_when_video_port_bound(self):
-        self.assertTrue(self._netstat(
-            "  UDP    0.0.0.0:47998          *:*\n"
+    def test_returns_true_when_session_paused(self):
+        self.assertTrue(self._check(
+            '[2026-03-26 10:00:00]: Info: Session pausing for app [Half-Life].\n'
         ))
 
-    def test_returns_true_when_control_port_bound(self):
-        self.assertTrue(self._netstat(
-            "  UDP    0.0.0.0:47999          *:*\n"
+    def test_returns_true_when_session_resumed(self):
+        self.assertTrue(self._check(
+            '[2026-03-26 10:00:00]: Info: Session resuming for app [Half-Life].\n'
         ))
 
-    def test_returns_true_when_audio_port_bound(self):
-        self.assertTrue(self._netstat(
-            "  UDP    0.0.0.0:48000          *:*\n"
+    def test_returns_true_when_app_auto_detached(self):
+        self.assertTrue(self._check(
+            '[2026-03-26 10:00:00]: Info: Treating the app as a detached command.\n'
         ))
 
-    def test_returns_true_when_streaming_port_among_multiple_lines(self):
-        self.assertTrue(self._netstat(
-            "  UDP    0.0.0.0:5353           *:*\n"
-            "  UDP    0.0.0.0:47998          *:*\n"
-            "  UDP    0.0.0.0:1900           *:*\n"
+    def test_returns_false_when_app_exited(self):
+        self.assertFalse(self._check(
+            '[2026-03-26 10:00:00]: Info: Launching app [440]\n'
+            '[2026-03-26 10:01:00]: Info: All app processes have successfully exited.\n'
         ))
 
-    def test_returns_false_when_only_tcp_lines_present(self):
-        # The function only inspects UDP output; TCP lines are ignored
-        self.assertFalse(self._netstat(
-            "  TCP    0.0.0.0:47998          0.0.0.0:0   LISTENING\n"
+    def test_returns_false_when_process_terminated(self):
+        self.assertFalse(self._check(
+            '[2026-03-26 09:59:24]: Info: Session resuming for app [The Binding of Isaac: Rebirth].\n'
+            '[2026-03-26 09:59:55]: Info: Process terminated\n'
         ))
 
-    def test_returns_false_when_only_non_streaming_udp_ports_bound(self):
-        self.assertFalse(self._netstat(
-            "  UDP    0.0.0.0:5353           *:*\n"
-            "  UDP    0.0.0.0:1900           *:*\n"
+    def test_returns_false_when_app_forcefully_terminated(self):
+        self.assertFalse(self._check(
+            '[2026-03-26 10:00:00]: Info: Launching app [440]\n'
+            '[2026-03-26 10:01:00]: Info: Forcefully terminating the app\n'
         ))
 
-    def test_returns_false_on_subprocess_error(self):
-        with patch("server.subprocess.check_output", side_effect=OSError):
+    def test_returns_false_when_session_already_stopped(self):
+        self.assertFalse(self._check(
+            '[2026-03-26 10:00:00]: Info: Session already stopped, do not run pause commands.\n'
+        ))
+
+    def test_returns_false_when_no_graceful_exit_timeout(self):
+        self.assertFalse(self._check(
+            '[2026-03-26 10:00:00]: Info: No graceful exit timeout was specified\n'
+        ))
+
+    def test_returns_false_when_terminate_on_pause(self):
+        self.assertFalse(self._check(
+            '[2026-03-26 10:00:00]: Info: Terminating app [Half-Life] when all clients are disconnected.\n'
+        ))
+
+    def test_returns_false_when_log_empty(self):
+        self.assertFalse(self._check(""))
+
+    def test_returns_false_when_no_log_files_exist(self):
+        with patch("server._load_config_path", return_value=self._config_path):
             self.assertFalse(_is_streaming_active())
 
-    def test_returns_false_with_empty_output(self):
-        self.assertFalse(self._netstat(""))
-
-    def test_unrelated_udp_port_does_not_trigger(self):
-        self.assertFalse(self._netstat(
-            "  UDP    0.0.0.0:5000           *:*\n"
+    def test_returns_false_when_only_unrelated_log_lines(self):
+        self.assertFalse(self._check(
+            '[2026-03-26 10:00:00]: Info: Configuration UI available at [https://localhost:47990]\n'
+            '[2026-03-26 10:00:01]: Info: Registered Apollo mDNS service\n'
         ))
+
+    def test_most_recent_event_wins_running_after_stopped(self):
+        self.assertTrue(self._check(
+            '[2026-03-26 10:00:00]: Info: All app processes have successfully exited.\n'
+            '[2026-03-26 10:01:00]: Info: Launching app [440]\n'
+        ))
+
+    def test_most_recent_event_wins_stopped_after_running(self):
+        self.assertFalse(self._check(
+            '[2026-03-26 10:00:00]: Info: Launching app [440]\n'
+            '[2026-03-26 10:01:00]: Info: All app processes have successfully exited.\n'
+        ))
+
+    def test_pause_after_launch_means_still_running(self):
+        self.assertTrue(self._check(
+            '[2026-03-26 10:00:00]: Info: Launching app [440]\n'
+            '[2026-03-26 10:00:30]: Info: New streaming session started\n'
+            '[2026-03-26 10:05:00]: Info: Session pausing for app [Half-Life].\n'
+        ))
+
+    def test_falls_back_to_backup_log_when_current_has_no_events(self):
+        self.assertTrue(self._check(
+            log_content='[2026-03-26 10:00:00]: Info: Configuration UI available\n',
+            backup_content='[2026-03-26 09:00:00]: Info: Launching app [440]\n',
+        ))
+
+    def test_current_log_takes_precedence_over_backup(self):
+        self.assertFalse(self._check(
+            log_content='[2026-03-26 10:01:00]: Info: All app processes have successfully exited.\n',
+            backup_content='[2026-03-26 09:00:00]: Info: Launching app [440]\n',
+        ))
+
+    def test_handles_read_error_gracefully(self):
+        with patch("server._load_config_path", return_value=self._config_path):
+            self._log_file.write_text("Launching app [440]", encoding="utf-8")
+            with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+                self.assertFalse(_is_streaming_active())
 
 
 # ---------------------------------------------------------------------------
