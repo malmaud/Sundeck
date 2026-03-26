@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import server
+import sync_engine
 from server import Settings, _do_auto_sync, _is_streaming_active, _try_auto_sync, _SyncEventHandler, _schedule_sync, _set_sync_state, _get_sync_state
 from steam import SteamGame
 
@@ -43,7 +44,7 @@ class TestIsStreamingActive(unittest.TestCase):
             self._log_file.write_text(log_content, encoding="utf-8")
         if backup_content is not None:
             self._log_backup.write_text(backup_content, encoding="utf-8")
-        with patch("server._load_config_path", return_value=self._config_path):
+        with patch("sync_engine._load_config_path", return_value=self._config_path):
             return _is_streaming_active()
 
     def test_returns_true_when_app_launched(self):
@@ -103,7 +104,7 @@ class TestIsStreamingActive(unittest.TestCase):
         self.assertFalse(self._check(""))
 
     def test_returns_false_when_no_log_files_exist(self):
-        with patch("server._load_config_path", return_value=self._config_path):
+        with patch("sync_engine._load_config_path", return_value=self._config_path):
             self.assertFalse(_is_streaming_active())
 
     def test_returns_false_when_only_unrelated_log_lines(self):
@@ -144,7 +145,7 @@ class TestIsStreamingActive(unittest.TestCase):
         ))
 
     def test_handles_read_error_gracefully(self):
-        with patch("server._load_config_path", return_value=self._config_path):
+        with patch("sync_engine._load_config_path", return_value=self._config_path):
             self._log_file.write_text("Launching app [440]", encoding="utf-8")
             with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
                 self.assertFalse(_is_streaming_active())
@@ -164,11 +165,11 @@ class TestTryAutoSync(unittest.TestCase):
         mock_log = MagicMock()
         mock_schedule = MagicMock()
 
-        with patch("server._load_settings", return_value=settings), \
-             patch("server._is_streaming_active", return_value=streaming), \
-             patch("server._do_auto_sync", mock_sync), \
-             patch("server._append_log", mock_log), \
-             patch("server._schedule_sync", mock_schedule):
+        with patch("sync_engine._load_settings", return_value=settings), \
+             patch("sync_engine._is_streaming_active", return_value=streaming), \
+             patch("sync_engine._do_auto_sync", mock_sync), \
+             patch("sync_engine._append_log", mock_log), \
+             patch("sync_engine._schedule_sync", mock_schedule):
             _try_auto_sync()
 
         return mock_sync.called, mock_log, mock_schedule
@@ -217,49 +218,48 @@ class TestTryAutoSync(unittest.TestCase):
 class TestSyncState(unittest.TestCase):
     def setUp(self):
         _set_sync_state("idle")
-        with server._sync_timer_lock:
-            if server._sync_timer is not None:
-                server._sync_timer.cancel()
-                server._sync_timer = None
+        with sync_engine._sync_timer_lock:
+            if sync_engine._sync_timer is not None:
+                sync_engine._sync_timer.cancel()
+                sync_engine._sync_timer = None
 
     def test_schedule_sync_sets_pending(self):
-        with patch("server._try_auto_sync"):
+        with patch("sync_engine._try_auto_sync"):
             _schedule_sync(delay=60)
         self.assertEqual(_get_sync_state(), "pending")
 
     def test_try_auto_sync_resets_to_idle_after_success(self):
-        with patch("server._load_settings", return_value=Settings(auto_sync=True)), \
-             patch("server._is_streaming_active", return_value=False), \
-             patch("server._do_auto_sync", return_value=True), \
-             patch("server._append_log"):
+        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True)), \
+             patch("sync_engine._is_streaming_active", return_value=False), \
+             patch("sync_engine._do_auto_sync", return_value=True), \
+             patch("sync_engine._append_log"):
             _try_auto_sync()
 
         self.assertEqual(_get_sync_state(), "idle")
 
     def test_try_auto_sync_resets_to_idle_when_sync_raises(self):
-        with patch("server._load_settings", return_value=Settings(auto_sync=True)), \
-             patch("server._is_streaming_active", return_value=False), \
-             patch("server._do_auto_sync", side_effect=RuntimeError("fail")), \
-             patch("server._append_log"):
+        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True)), \
+             patch("sync_engine._is_streaming_active", return_value=False), \
+             patch("sync_engine._do_auto_sync", side_effect=RuntimeError("fail")), \
+             patch("sync_engine._append_log"):
             _try_auto_sync()
 
         self.assertEqual(_get_sync_state(), "idle")
 
     def test_try_auto_sync_resets_to_idle_when_disabled(self):
         _set_sync_state("pending")
-        with patch("server._load_settings", return_value=Settings(auto_sync=False)):
+        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=False)):
             _try_auto_sync()
 
         self.assertEqual(_get_sync_state(), "idle")
 
     def test_try_auto_sync_stays_pending_when_streaming(self):
         _set_sync_state("pending")
-        with patch("server._load_settings", return_value=Settings(auto_sync=True)), \
-             patch("server._is_streaming_active", return_value=True), \
-             patch("server._schedule_sync"):
+        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True)), \
+             patch("sync_engine._is_streaming_active", return_value=True), \
+             patch("sync_engine._schedule_sync"):
             _try_auto_sync()
 
-        # State remains pending (re-scheduled), not bumped to syncing or reset to idle
         self.assertEqual(_get_sync_state(), "pending")
 
     def test_api_sync_status_returns_idle(self):
@@ -291,28 +291,28 @@ class TestSyncEventHandler(unittest.TestCase):
     def test_triggers_on_matching_filename(self):
         handler = _SyncEventHandler({"localconfig.vdf"})
         event = MagicMock(is_directory=False, src_path=r"C:\Steam\userdata\123\config\localconfig.vdf")
-        with patch("server._schedule_sync") as mock_schedule:
+        with patch("sync_engine._schedule_sync") as mock_schedule:
             handler.on_modified(event)
         mock_schedule.assert_called_once()
 
     def test_ignores_non_matching_filename(self):
         handler = _SyncEventHandler({"localconfig.vdf"})
         event = MagicMock(is_directory=False, src_path=r"C:\Steam\userdata\123\config\other.vdf")
-        with patch("server._schedule_sync") as mock_schedule:
+        with patch("sync_engine._schedule_sync") as mock_schedule:
             handler.on_modified(event)
         mock_schedule.assert_not_called()
 
     def test_ignores_directory_events(self):
         handler = _SyncEventHandler({"localconfig.vdf"})
         event = MagicMock(is_directory=True, src_path=r"C:\Steam\userdata\123\config")
-        with patch("server._schedule_sync") as mock_schedule:
+        with patch("sync_engine._schedule_sync") as mock_schedule:
             handler.on_modified(event)
         mock_schedule.assert_not_called()
 
     def test_matching_is_case_insensitive(self):
         handler = _SyncEventHandler({"LocalConfig.VDF"})
         event = MagicMock(is_directory=False, src_path=r"C:\Steam\localconfig.vdf")
-        with patch("server._schedule_sync") as mock_schedule:
+        with patch("sync_engine._schedule_sync") as mock_schedule:
             handler.on_modified(event)
         mock_schedule.assert_called_once()
 
@@ -333,14 +333,14 @@ class TestDoAutoSync(unittest.TestCase):
         mock_restart = MagicMock()
         settings = Settings(**settings_data) if isinstance(settings_data, dict) else settings_data
 
-        with patch("server._load_settings", return_value=settings), \
-             patch("server.get_recent_games", return_value=games), \
-             patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
-             patch("server.load_sunshine_config", return_value=MagicMock()), \
-             patch("server.build_sunshine_config", return_value=fake_config), \
-             patch("server.get_thumbnail", return_value="/t/fake.png"), \
-             patch("server._write_elevated", mock_write), \
-             patch("server._restart_elevated", mock_restart):
+        with patch("sync_engine._load_settings", return_value=settings), \
+             patch("sync_engine.get_recent_games", return_value=games), \
+             patch("sync_engine._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
+             patch("sync_engine.build_sunshine_config", return_value=fake_config), \
+             patch("sync_engine.get_thumbnail", return_value="/t/fake.png"), \
+             patch("sync_engine._write_elevated", mock_write), \
+             patch("sync_engine._restart_elevated", mock_restart):
             result = _do_auto_sync()
 
         return mock_write, mock_restart, result
@@ -370,14 +370,14 @@ class TestDoAutoSync(unittest.TestCase):
             m.model_dump_json.return_value = "{}"
             return m
 
-        with patch("server._load_settings", return_value=Settings(count=10, excluded_games=[100])), \
-             patch("server.get_recent_games", return_value=FAKE_GAMES), \
-             patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
-             patch("server.load_sunshine_config", return_value=MagicMock()), \
-             patch("server.build_sunshine_config", side_effect=fake_build), \
-             patch("server.get_thumbnail", return_value="/t/200.png"), \
-             patch("server._write_elevated"), \
-             patch("server._restart_elevated"):
+        with patch("sync_engine._load_settings", return_value=Settings(count=10, excluded_games=[100])), \
+             patch("sync_engine.get_recent_games", return_value=FAKE_GAMES), \
+             patch("sync_engine._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
+             patch("sync_engine.build_sunshine_config", side_effect=fake_build), \
+             patch("sync_engine.get_thumbnail", return_value="/t/200.png"), \
+             patch("sync_engine._write_elevated"), \
+             patch("sync_engine._restart_elevated"):
             _do_auto_sync()
 
         ids = {g.app_id for g in captured["games"]}
@@ -385,13 +385,13 @@ class TestDoAutoSync(unittest.TestCase):
         self.assertIn(200, ids)
 
     def test_fetches_all_games_without_thumbnails(self):
-        with patch("server._load_settings", return_value=Settings(count=5)), \
-             patch("server.get_recent_games", return_value=[]) as mock_get, \
-             patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
-             patch("server.load_sunshine_config", return_value=MagicMock()), \
-             patch("server.build_sunshine_config", return_value=MagicMock()), \
-             patch("server._write_elevated"), \
-             patch("server._restart_elevated"):
+        with patch("sync_engine._load_settings", return_value=Settings(count=5)), \
+             patch("sync_engine.get_recent_games", return_value=[]) as mock_get, \
+             patch("sync_engine._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
+             patch("sync_engine.build_sunshine_config", return_value=MagicMock()), \
+             patch("sync_engine._write_elevated"), \
+             patch("sync_engine._restart_elevated"):
             _do_auto_sync()
 
         mock_get.assert_called_once_with(count=None, fetch_thumbnails=False)
@@ -402,14 +402,14 @@ class TestDoAutoSync(unittest.TestCase):
         fake_config = MagicMock()
         fake_config.model_dump_json.return_value = "{}"
 
-        with patch("server._load_settings", return_value=Settings(count=10)), \
-             patch("server.get_recent_games", return_value=FAKE_GAMES), \
-             patch("server._load_config_path", return_value=expected), \
-             patch("server.load_sunshine_config", return_value=MagicMock()), \
-             patch("server.build_sunshine_config", return_value=fake_config), \
-             patch("server.get_thumbnail", return_value="/t/fake.png"), \
-             patch("server._write_elevated", mock_write), \
-             patch("server._restart_elevated"):
+        with patch("sync_engine._load_settings", return_value=Settings(count=10)), \
+             patch("sync_engine.get_recent_games", return_value=FAKE_GAMES), \
+             patch("sync_engine._load_config_path", return_value=expected), \
+             patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
+             patch("sync_engine.build_sunshine_config", return_value=fake_config), \
+             patch("sync_engine.get_thumbnail", return_value="/t/fake.png"), \
+             patch("sync_engine._write_elevated", mock_write), \
+             patch("sync_engine._restart_elevated"):
             _do_auto_sync()
 
         self.assertEqual(mock_write.call_args[0][0], expected)
@@ -429,14 +429,14 @@ class TestDoAutoSync(unittest.TestCase):
         mock_write = MagicMock()
         mock_restart = MagicMock()
 
-        with patch("server._load_settings", return_value=Settings(count=10)), \
-             patch("server.get_recent_games", return_value=FAKE_GAMES), \
-             patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
-             patch("server.load_sunshine_config", return_value=existing), \
-             patch("server.build_sunshine_config", return_value=new_config), \
-             patch("server.get_thumbnail", return_value="/t/fake.png"), \
-             patch("server._write_elevated", mock_write), \
-             patch("server._restart_elevated", mock_restart):
+        with patch("sync_engine._load_settings", return_value=Settings(count=10)), \
+             patch("sync_engine.get_recent_games", return_value=FAKE_GAMES), \
+             patch("sync_engine._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("sync_engine.load_sunshine_config", return_value=existing), \
+             patch("sync_engine.build_sunshine_config", return_value=new_config), \
+             patch("sync_engine.get_thumbnail", return_value="/t/fake.png"), \
+             patch("sync_engine._write_elevated", mock_write), \
+             patch("sync_engine._restart_elevated", mock_restart):
             result = _do_auto_sync()
 
         return mock_write, mock_restart, result
@@ -461,15 +461,14 @@ class TestDoAutoSync(unittest.TestCase):
 
 class TestScheduleSync(unittest.TestCase):
     def setUp(self):
-        # Reset global timer state between tests.
-        with server._sync_timer_lock:
-            if server._sync_timer is not None:
-                server._sync_timer.cancel()
-                server._sync_timer = None
+        with sync_engine._sync_timer_lock:
+            if sync_engine._sync_timer is not None:
+                sync_engine._sync_timer.cancel()
+                sync_engine._sync_timer = None
 
     def test_debounces_rapid_calls(self):
         """Multiple rapid calls should result in only one _try_auto_sync invocation."""
-        with patch("server._try_auto_sync") as mock_sync:
+        with patch("sync_engine._try_auto_sync") as mock_sync:
             for _ in range(5):
                 _schedule_sync(delay=0.05)
             time.sleep(0.2)
@@ -477,7 +476,7 @@ class TestScheduleSync(unittest.TestCase):
 
     def test_fires_after_delay(self):
         """A single call should fire _try_auto_sync after the delay."""
-        with patch("server._try_auto_sync") as mock_sync:
+        with patch("sync_engine._try_auto_sync") as mock_sync:
             _schedule_sync(delay=0.05)
             mock_sync.assert_not_called()   # not yet
             time.sleep(0.2)
@@ -540,46 +539,46 @@ class TestUpdateSettingsTrigger(unittest.TestCase):
 
 class TestSsePush(unittest.TestCase):
     def setUp(self):
-        with server._sse_lock:
-            server._sse_subscribers.clear()
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.clear()
 
     def tearDown(self):
-        with server._sse_lock:
-            server._sse_subscribers.clear()
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.clear()
 
     def test_delivers_message_to_subscriber(self):
         q = queue.SimpleQueue()
-        with server._sse_lock:
-            server._sse_subscribers.add(q)
-        server._sse_push("my_event", '{"x": 1}')
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.add(q)
+        sync_engine._sse_push("my_event", '{"x": 1}')
         msg = q.get_nowait()
         self.assertIn("event: my_event", msg)
         self.assertIn('"x": 1', msg)
 
     def test_delivers_to_all_subscribers(self):
         q1, q2 = queue.SimpleQueue(), queue.SimpleQueue()
-        with server._sse_lock:
-            server._sse_subscribers.update({q1, q2})
-        server._sse_push("ev", "data")
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.update({q1, q2})
+        sync_engine._sse_push("ev", "data")
         self.assertFalse(q1.empty())
         self.assertFalse(q2.empty())
 
     def test_no_error_with_no_subscribers(self):
-        server._sse_push("ev", "data")  # must not raise
+        sync_engine._sse_push("ev", "data")  # must not raise
 
     def test_removes_dead_subscriber(self):
         dead = MagicMock()
         dead.put_nowait.side_effect = Exception("broken pipe")
-        with server._sse_lock:
-            server._sse_subscribers.add(dead)
-        server._sse_push("ev", "data")
-        self.assertNotIn(dead, server._sse_subscribers)
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.add(dead)
+        sync_engine._sse_push("ev", "data")
+        self.assertNotIn(dead, sync_engine._sse_subscribers)
 
     def test_message_ends_with_double_newline(self):
         q = queue.SimpleQueue()
-        with server._sse_lock:
-            server._sse_subscribers.add(q)
-        server._sse_push("ev", "payload")
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.add(q)
+        sync_engine._sse_push("ev", "payload")
         msg = q.get_nowait()
         self.assertTrue(msg.endswith("\n\n"))
 
@@ -591,18 +590,18 @@ class TestSsePush(unittest.TestCase):
 
 class TestSseStateChangeSideEffects(unittest.TestCase):
     def setUp(self):
-        with server._sse_lock:
-            server._sse_subscribers.clear()
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.clear()
         _set_sync_state("idle")
 
     def tearDown(self):
-        with server._sse_lock:
-            server._sse_subscribers.clear()
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.clear()
 
     def _subscribe(self):
         q = queue.SimpleQueue()
-        with server._sse_lock:
-            server._sse_subscribers.add(q)
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.add(q)
         return q
 
     def test_set_sync_state_pushes_sync_status_event(self):
@@ -615,7 +614,7 @@ class TestSseStateChangeSideEffects(unittest.TestCase):
 
     def test_bump_games_version_pushes_sync_status_event(self):
         q = self._subscribe()
-        server._bump_games_version()
+        sync_engine._bump_games_version()
         msg = q.get_nowait()
         self.assertIn("event: sync_status", msg)
         data = json.loads(msg.split("data: ")[1].strip())
@@ -623,8 +622,8 @@ class TestSseStateChangeSideEffects(unittest.TestCase):
 
     def test_append_log_pushes_log_updated_event(self):
         q = self._subscribe()
-        with patch("server._save_log"):
-            server._append_log("auto", True, "Synced games")
+        with patch("sync_engine._save_log"):
+            sync_engine._append_log("auto", True, "Synced games")
         msg = q.get_nowait()
         self.assertIn("event: log_updated", msg)
 
@@ -636,13 +635,13 @@ class TestSseStateChangeSideEffects(unittest.TestCase):
 
 class TestApiEventsRoute(unittest.TestCase):
     def setUp(self):
-        with server._sse_lock:
-            server._sse_subscribers.clear()
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.clear()
         _set_sync_state("idle")
 
     def tearDown(self):
-        with server._sse_lock:
-            server._sse_subscribers.clear()
+        with sync_engine._sse_lock:
+            sync_engine._sse_subscribers.clear()
 
     def _open_stream(self):
         """Return (gen, first_chunk) — caller must call gen.close() when done."""
@@ -673,20 +672,20 @@ class TestApiEventsRoute(unittest.TestCase):
         self.assertIn("games_version", data)
 
     def test_subscriber_registered_after_first_yield(self):
-        initial = len(server._sse_subscribers)
+        initial = len(sync_engine._sse_subscribers)
         gen, _, _ = self._open_stream()
-        self.assertEqual(len(server._sse_subscribers), initial + 1)
+        self.assertEqual(len(sync_engine._sse_subscribers), initial + 1)
         gen.close()
 
     def test_subscriber_removed_on_close(self):
         gen, _, _ = self._open_stream()
-        count_open = len(server._sse_subscribers)
+        count_open = len(sync_engine._sse_subscribers)
         gen.close()
-        self.assertEqual(len(server._sse_subscribers), count_open - 1)
+        self.assertEqual(len(sync_engine._sse_subscribers), count_open - 1)
 
     def test_pushed_event_appears_in_stream(self):
         gen, _, _ = self._open_stream()
-        server._sse_push("custom_event", '{"hello": "world"}')
+        sync_engine._sse_push("custom_event", '{"hello": "world"}')
         chunk = next(gen)
         gen.close()
         if isinstance(chunk, bytes):

@@ -1,143 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import ReactDOM from "react-dom/client";
 
-interface Game {
-  app_id: number;
-  name: string;
-  thumbnail: string;
-  last_played: number;
-}
-
-interface Settings {
-  config_path: string;
-  suggestions: string[];
-  excluded_games: number[];
-  included_games: number[];
-  show_debug: boolean;
-  count: number;
-  auto_sync: boolean;
-}
-
-interface Status {
-  msg: string;
-  type: "loading" | "error" | "success";
-}
-
-interface LogEntry {
-  timestamp: number;
-  kind: "manual" | "auto";
-  success: boolean;
-  message: string;
-  detail: string;
-}
-
-interface CardAction {
-  label: string;
-  className: string;
-  title: string;
-  onClick: () => void;
-}
-
-interface GameCardProps {
-  game: Game;
-  action: CardAction;
-  showDebug: boolean;
-}
-
-const OTHER_INITIAL_LIMIT = 24;
-
-async function apiGetGames(): Promise<Game[]> {
-  const res = await fetch("/api/games");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<Game[]>;
-}
-
-async function apiGetSettings(): Promise<Settings> {
-  const res = await fetch("/api/settings");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<Settings>;
-}
-
-async function apiPatchSettings(updates: Partial<Omit<Settings, "suggestions">>): Promise<void> {
-  const res = await fetch("/api/settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(updates),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-}
-
-async function apiGetLog(): Promise<LogEntry[]> {
-  const res = await fetch("/api/log");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<LogEntry[]>;
-}
-
-async function apiSync(): Promise<void> {
-  const res = await fetch("/api/sync", { method: "POST" });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-}
-
-function computeAutoSyncIds(games: Game[], count: number, excludedIds: Set<number>): Set<number> {
-  const ids = new Set<number>();
-  let n = 0;
-  for (const g of games) {
-    if (excludedIds.has(g.app_id)) continue;
-    if (n >= count) break;
-    ids.add(g.app_id);
-    n++;
-  }
-  return ids;
-}
-
-function GameCard({ game, action, showDebug }: GameCardProps) {
-  const [imgLoaded, setImgLoaded] = useState(false);
-  const [imgError, setImgError] = useState(false);
-  const imgRef = useRef<HTMLImageElement>(null);
-
-  useEffect(() => {
-    if (imgRef.current?.complete && imgRef.current.naturalWidth > 0) {
-      setImgLoaded(true);
-    }
-  }, []);
-
-  return (
-    <div className="game-card">
-      <button
-        className={`card-action ${action.className}`}
-        onClick={action.onClick}
-        title={action.title}
-      >
-        {action.label}
-      </button>
-      {!imgError && game.thumbnail
-        ? <>
-            <img
-              ref={imgRef}
-              src={game.thumbnail}
-              alt={game.name}
-              loading="lazy"
-              onLoad={() => setImgLoaded(true)}
-              onError={() => setImgError(true)}
-            />
-            {!imgLoaded && <div className="game-thumbnail-placeholder loading" aria-hidden="true" />}
-          </>
-        : <div className="game-thumbnail-placeholder" aria-hidden="true" />
-      }
-      <div className="game-name-row">
-        <div className="game-name" title={game.name}>{game.name}</div>
-      </div>
-      {showDebug && <div className="game-id">App ID: {game.app_id}</div>}
-      {game.last_played > 0 && (
-        <div className="game-last-played">
-          {new Date(game.last_played * 1000).toLocaleDateString()}
-        </div>
-      )}
-    </div>
-  );
-}
+import type { Game, Settings, Status, LogEntry } from "./types";
+import { OTHER_INITIAL_LIMIT } from "./types";
+import { apiGetGames, apiGetSettings, apiPatchSettings, apiGetLog, apiSync } from "./api";
+import { computeAutoSyncIds } from "./utils";
+import { GameCard } from "./GameCard";
+import { SettingsPanel } from "./SettingsPanel";
+import { LogPanel } from "./LogPanel";
 
 function App() {
   const [games, setGames] = useState<Game[]>([]);
@@ -368,45 +238,15 @@ function App() {
           </div>
         </div>
         {settingsOpen && (
-          <div className="settings-panel">
-            <label>
-              Config path:
-              <input
-                list="config-path-suggestions"
-                className="config-path-input"
-                value={configPathInput}
-                onChange={(e) => setConfigPathInput(e.target.value)}
-                onBlur={() => apiPatchSettings({ config_path: configPathInput }).catch(() => {})}
-                onKeyDown={(e) => e.key === "Enter" && apiPatchSettings({ config_path: configPathInput }).catch(() => {})}
-                spellCheck={false}
-              />
-              <datalist id="config-path-suggestions">
-                {settings.suggestions.map((s) => <option key={s} value={s} />)}
-              </datalist>
-            </label>
-            <label className="auto-sync-toggle">
-              <input
-                type="checkbox"
-                checked={autoSync}
-                onChange={(e) => {
-                  setAutoSync(e.target.checked);
-                  apiPatchSettings({ auto_sync: e.target.checked }).catch(() => {});
-                }}
-              />
-              Auto-sync when game list changes
-            </label>
-            <label className="debug-toggle">
-              <input
-                type="checkbox"
-                checked={showDebug}
-                onChange={(e) => {
-                  setShowDebug(e.target.checked);
-                  apiPatchSettings({ show_debug: e.target.checked }).catch(() => {});
-                }}
-              />
-              Show debug information
-            </label>
-          </div>
+          <SettingsPanel
+            configPathInput={configPathInput}
+            setConfigPathInput={setConfigPathInput}
+            suggestions={settings.suggestions}
+            autoSync={autoSync}
+            setAutoSync={setAutoSync}
+            showDebug={showDebug}
+            setShowDebug={setShowDebug}
+          />
         )}
       </header>
       <main>
@@ -420,29 +260,7 @@ function App() {
           </div>
         )}
         {logOpen && (
-          <div className="log-panel">
-            <div className="log-panel-header">
-              <span>Activity Log</span>
-              <button className="btn-secondary" onClick={refreshLog}>Refresh</button>
-            </div>
-            {logEntries.length === 0
-              ? <div className="log-empty">No activity yet.</div>
-              : <div className="log-entries">
-                  {logEntries.map((e, i) => (
-                    <div key={i} className="log-entry" title={e.detail || undefined}>
-                      <span className="log-time">
-                        {new Date(e.timestamp * 1000).toLocaleString()}
-                      </span>
-                      <span className={`log-kind ${e.kind}`}>{e.kind}</span>
-                      <span className={`log-status ${e.success ? "success" : "error"}`}>
-                        {e.success ? "✓" : "✗"}
-                      </span>
-                      <span className="log-msg">{e.message}</span>
-                    </div>
-                  ))}
-                </div>
-            }
-          </div>
+          <LogPanel logEntries={logEntries} refreshLog={refreshLog} />
         )}
         <div className="search-bar">
           <input
