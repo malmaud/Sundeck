@@ -494,12 +494,12 @@ function App() {
           <section className="game-section">
             <h2 className="section-header section-excluded">
               Excluded
-              <span className="section-desc">{excludedGames.length} games never synced</span>
+              <span className="section-desc">{excludedGames.length} games excluded from sync</span>
             </h2>
             <div className="game-grid">
               {excludedGames.map(g => (
                 <GameCard key={g.app_id} game={g} showDebug={showDebug}
-                  action={{ label: "Restore", className: "action-restore", title: "Remove exclusion", onClick: () => restoreGame(g.app_id) }} />
+                  action={{ label: "Stop excluding", className: "action-restore", title: "Remove exclusion", onClick: () => restoreGame(g.app_id) }} />
               ))}
             </div>
           </section>

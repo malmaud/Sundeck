@@ -417,12 +417,17 @@ main {
   gap: 16px;
 }
 
+@keyframes card-enter {
+  from { transform: scale(0.96) translateY(6px); filter: brightness(0.7); }
+}
+
 .game-card {
   background: #16213e;
   border-radius: 8px;
   overflow: hidden;
   position: relative;
   transition: transform 0.15s, box-shadow 0.15s;
+  animation: card-enter 0.2s ease-out;
 }
 
 .game-card:hover {
