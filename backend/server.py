@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_valid
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from steam import get_recent_games, get_vdf_path
+from steam import get_recent_games, get_thumbnail, get_vdf_path
 from sunshine import (
     _detect_streaming_service,
     build_sunshine_config,
@@ -77,7 +77,8 @@ _DEFAULT_CONFIG_PATH = r"C:\Program Files\Apollo\config\apps.json"
 
 class Settings(BaseModel):
     config_path: str | None = None
-    unchecked_games: list[int] = Field(default_factory=list)
+    excluded_games: list[int] = Field(default_factory=list)
+    included_games: list[int] = Field(default_factory=list)
     show_debug: bool = False
     count: int = 10
     auto_sync: bool = True
@@ -85,7 +86,8 @@ class Settings(BaseModel):
 
 class SettingsPatch(BaseModel):
     config_path: str | None = None
-    unchecked_games: list[int] | None = None
+    excluded_games: list[int] | None = None
+    included_games: list[int] | None = None
     show_debug: bool | None = None
     count: int | None = None
     auto_sync: bool | None = None
@@ -149,7 +151,13 @@ def _append_log(kind: str, success: bool, message: str, detail: str = "") -> Non
 def _load_settings() -> Settings:
     if _SETTINGS_FILE.exists():
         try:
-            return Settings.model_validate_json(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            raw = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+            # Migrate from old unchecked_games → excluded_games
+            if "unchecked_games" in raw:
+                if "excluded_games" not in raw:
+                    raw["excluded_games"] = raw["unchecked_games"]
+                del raw["unchecked_games"]
+            return Settings.model_validate(raw)
         except Exception:
             pass
     return Settings()
@@ -190,35 +198,64 @@ def images(filename: str) -> Response:
 
 @app.route("/thumbnails/<path:filename>")
 def thumbnails(filename: str) -> Response:
-    return send_from_directory(_THUMBNAIL_DIR, filename)
+    stem = Path(filename).stem
+    small_name = f"{stem}_small.jpg"
+    small_path = _THUMBNAIL_DIR / small_name
+    full_path = _THUMBNAIL_DIR / filename
+
+    if not small_path.exists():
+        # Ensure full-size image is downloaded
+        if not full_path.exists():
+            try:
+                get_thumbnail(int(stem))
+            except Exception:
+                pass
+        # Resize to a small JPEG for fast serving
+        if full_path.exists():
+            try:
+                from PIL import Image
+                img = Image.open(full_path).convert("RGB")
+                img.thumbnail((300, 450), Image.Resampling.LANCZOS)
+                img.save(small_path, format="JPEG", quality=80)
+            except Exception:
+                pass
+
+    if small_path.exists():
+        resp = send_from_directory(_THUMBNAIL_DIR, small_name)
+        resp.cache_control.max_age = 31536000
+        resp.cache_control.public = True
+        return resp
+    return Response(status=404)
 
 
-def _thumbnail_data_uri(path: str) -> str:
-    try:
-        from PIL import Image
-        p = Path(path)
-        small = p.parent / f"{p.stem}_small.jpg"
-        if not small.exists():
-            img = Image.open(p).convert("RGB")
-            img.thumbnail((300, 450), Image.Resampling.LANCZOS)
-            img.save(small, format="JPEG", quality=85)
-        with open(small, "rb") as f:
-            data = base64.b64encode(f.read()).decode()
-        return f"data:image/jpeg;base64,{data}"
-    except Exception:
-        return ""
+def _small_thumbnail_uri(app_id: int) -> str:
+    """Return a data URI if the small thumbnail is cached, else a URL for on-demand generation."""
+    small = _THUMBNAIL_DIR / f"{app_id}_small.jpg"
+    if not small.exists():
+        full = _THUMBNAIL_DIR / f"{app_id}.png"
+        if full.exists():
+            try:
+                from PIL import Image
+                img = Image.open(full).convert("RGB")
+                img.thumbnail((300, 450), Image.Resampling.LANCZOS)
+                img.save(small, format="JPEG", quality=80)
+            except Exception:
+                return f"/thumbnails/{app_id}.png"
+        else:
+            return f"/thumbnails/{app_id}.png"
+    data = base64.b64encode(small.read_bytes()).decode()
+    return f"data:image/jpeg;base64,{data}"
 
 
 @app.route("/api/games")
 def api_games() -> Response:
-    count = request.args.get("count", 10, type=int)
-    games = get_recent_games(count)
+    games = get_recent_games(count=None, fetch_thumbnails=False)
     return jsonify(
         [
             {
                 "app_id": g.app_id,
                 "name": g.name,
-                "thumbnail": _thumbnail_data_uri(g.thumbnail) if g.thumbnail else "",
+                "thumbnail": _small_thumbnail_uri(g.app_id),
                 "last_played": g.last_played,
             }
             for g in games
@@ -245,7 +282,7 @@ def api_update_settings() -> Response | tuple[Response, int]:
         return jsonify({"error": "no recognised fields"}), 400
     _patch_settings(**updates)
     # Sync-relevant fields changed → debounced auto-sync check.
-    if {"unchecked_games", "count", "auto_sync"} & updates.keys():
+    if {"excluded_games", "included_games", "count", "auto_sync"} & updates.keys():
         _schedule_sync()
     return jsonify({"status": "ok"})
 
@@ -259,36 +296,21 @@ def api_get_config() -> Response:
         return jsonify([])
 
 
-@app.route("/api/config", methods=["POST"])
-def api_update_config() -> Response | tuple[Response, int]:
-    body = request.get_json(silent=True) or {}
-    app_ids = body.get("app_ids", [])
-    if not app_ids:
-        return jsonify({"error": "No app IDs provided"}), 400
-
-    ids = set(app_ids)
-    games = get_recent_games(len(ids), only_ids=ids)
-    order = {aid: i for i, aid in enumerate(app_ids)}
-    games.sort(key=lambda g: order.get(g.app_id, 0))
-
-    apollo_config = _load_config_path()
-    existing = load_sunshine_config(apollo_config)
-    config = build_sunshine_config(existing, games)
-
-    if config.model_dump() == existing.model_dump():
-        _append_log("manual", True, "No changes, sync skipped")
-        return jsonify({"status": "ok", "count": len(app_ids)})
-
-    config_json = config.model_dump_json(by_alias=True, indent=4)
+@app.route("/api/sync", methods=["POST"])
+def api_manual_sync() -> Response | tuple[Response, int]:
+    _set_sync_state("syncing")
     try:
-        _write_elevated(apollo_config, config_json)
-        _restart_elevated()
+        synced = _do_auto_sync()
+        if synced:
+            _append_log("manual", True, "Synced games")
+        else:
+            _append_log("manual", True, "No changes, sync skipped")
+        return jsonify({"status": "ok"})
     except Exception as exc:
         _append_log("manual", False, str(exc).splitlines()[0], detail=traceback.format_exc())
         return jsonify({"error": str(exc).splitlines()[0]}), 500
-    _append_log("manual", True, f"Synced {len(app_ids)} games")
-
-    return jsonify({"status": "ok", "count": len(app_ids)})
+    finally:
+        _set_sync_state("idle")
 
 
 @app.route("/api/sync-status")
@@ -397,14 +419,33 @@ def _is_streaming_active() -> bool:
 def _do_auto_sync() -> bool:
     """Run an auto-sync.  Return True if config was written + service restarted."""
     settings = _load_settings()
-    unchecked = set(settings.unchecked_games)
-    games = get_recent_games(settings.count)
-    checked_games = [g for g in games if g.app_id not in unchecked]
-    if not checked_games:
+    excluded = set(settings.excluded_games)
+    included = set(settings.included_games)
+    all_games = get_recent_games(count=None, fetch_thumbnails=False)
+
+    # Top N non-excluded games
+    sync_ids: set[int] = set()
+    n = 0
+    for g in all_games:
+        if g.app_id in excluded:
+            continue
+        if n < settings.count:
+            sync_ids.add(g.app_id)
+            n += 1
+    # Force-included games (that aren't excluded)
+    sync_ids.update(aid for aid in included if aid not in excluded)
+
+    synced_games = [g for g in all_games if g.app_id in sync_ids]
+    if not synced_games:
         return False
+
+    # Fetch thumbnails only for the synced subset
+    for g in synced_games:
+        g.thumbnail = get_thumbnail(g.app_id)
+
     config_path = _load_config_path()
     existing = load_sunshine_config(config_path)
-    config = build_sunshine_config(existing, checked_games)
+    config = build_sunshine_config(existing, synced_games)
     if config.model_dump() == existing.model_dump():
         return False
     _set_sync_state("syncing")

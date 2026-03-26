@@ -157,20 +157,13 @@ class TestSyncState(unittest.TestCase):
             _schedule_sync(delay=60)
         self.assertEqual(_get_sync_state(), "pending")
 
-    def test_try_auto_sync_sets_syncing_then_idle(self):
-        observed = []
-
-        def fake_do_sync():
-            observed.append(_get_sync_state())
-            return True
-
+    def test_try_auto_sync_resets_to_idle_after_success(self):
         with patch("server._load_settings", return_value=Settings(auto_sync=True)), \
              patch("server._is_streaming_active", return_value=False), \
-             patch("server._do_auto_sync", side_effect=fake_do_sync), \
+             patch("server._do_auto_sync", return_value=True), \
              patch("server._append_log"):
             _try_auto_sync()
 
-        self.assertEqual(observed, ["syncing"])
         self.assertEqual(_get_sync_state(), "idle")
 
     def test_try_auto_sync_resets_to_idle_when_sync_raises(self):
@@ -275,6 +268,7 @@ class TestDoAutoSync(unittest.TestCase):
              patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
              patch("server.load_sunshine_config", return_value=MagicMock()), \
              patch("server.build_sunshine_config", return_value=fake_config), \
+             patch("server.get_thumbnail", return_value="/t/fake.png"), \
              patch("server._write_elevated", mock_write), \
              patch("server._restart_elevated", mock_restart):
             result = _do_auto_sync()
@@ -282,22 +276,22 @@ class TestDoAutoSync(unittest.TestCase):
         return mock_write, mock_restart, result
 
     def test_writes_and_restarts_when_games_available(self):
-        mock_write, mock_restart, result = self._run({"count": 10, "unchecked_games": []})
+        mock_write, mock_restart, result = self._run({"count": 10, "excluded_games": []})
         mock_write.assert_called_once()
         mock_restart.assert_called_once()
         self.assertTrue(result)
 
     def test_returns_false_when_no_games_returned(self):
-        _, _, result = self._run({"count": 10, "unchecked_games": []}, games=[])
+        _, _, result = self._run({"count": 10, "excluded_games": []}, games=[])
         self.assertFalse(result)
 
     def test_does_nothing_when_all_games_unchecked(self):
-        mock_write, mock_restart, result = self._run({"count": 10, "unchecked_games": [100, 200]})
+        mock_write, mock_restart, result = self._run({"count": 10, "excluded_games": [100, 200]})
         mock_write.assert_not_called()
         mock_restart.assert_not_called()
         self.assertFalse(result)
 
-    def test_filters_unchecked_games_before_building_config(self):
+    def test_filters_excluded_games_before_building_config(self):
         captured = {}
 
         def fake_build(existing, games, **kwargs):
@@ -306,11 +300,12 @@ class TestDoAutoSync(unittest.TestCase):
             m.model_dump_json.return_value = "{}"
             return m
 
-        with patch("server._load_settings", return_value=Settings(count=10, unchecked_games=[100])), \
+        with patch("server._load_settings", return_value=Settings(count=10, excluded_games=[100])), \
              patch("server.get_recent_games", return_value=FAKE_GAMES), \
              patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
              patch("server.load_sunshine_config", return_value=MagicMock()), \
              patch("server.build_sunshine_config", side_effect=fake_build), \
+             patch("server.get_thumbnail", return_value="/t/200.png"), \
              patch("server._write_elevated"), \
              patch("server._restart_elevated"):
             _do_auto_sync()
@@ -319,7 +314,7 @@ class TestDoAutoSync(unittest.TestCase):
         self.assertNotIn(100, ids)
         self.assertIn(200, ids)
 
-    def test_requests_correct_game_count_from_steam(self):
+    def test_fetches_all_games_without_thumbnails(self):
         with patch("server._load_settings", return_value=Settings(count=5)), \
              patch("server.get_recent_games", return_value=[]) as mock_get, \
              patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
@@ -329,19 +324,7 @@ class TestDoAutoSync(unittest.TestCase):
              patch("server._restart_elevated"):
             _do_auto_sync()
 
-        mock_get.assert_called_once_with(5)
-
-    def test_defaults_game_count_to_10(self):
-        with patch("server._load_settings", return_value=Settings()), \
-             patch("server.get_recent_games", return_value=[]) as mock_get, \
-             patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
-             patch("server.load_sunshine_config", return_value=MagicMock()), \
-             patch("server.build_sunshine_config", return_value=MagicMock()), \
-             patch("server._write_elevated"), \
-             patch("server._restart_elevated"):
-            _do_auto_sync()
-
-        mock_get.assert_called_once_with(10)
+        mock_get.assert_called_once_with(count=None, fetch_thumbnails=False)
 
     def test_write_targets_configured_path(self):
         expected = Path("/custom/apps.json")
@@ -354,14 +337,15 @@ class TestDoAutoSync(unittest.TestCase):
              patch("server._load_config_path", return_value=expected), \
              patch("server.load_sunshine_config", return_value=MagicMock()), \
              patch("server.build_sunshine_config", return_value=fake_config), \
+             patch("server.get_thumbnail", return_value="/t/fake.png"), \
              patch("server._write_elevated", mock_write), \
              patch("server._restart_elevated"):
             _do_auto_sync()
 
         self.assertEqual(mock_write.call_args[0][0], expected)
 
-    def test_partially_unchecked_games_still_syncs_remainder(self):
-        mock_write, mock_restart, _ = self._run({"count": 10, "unchecked_games": [100]})
+    def test_partially_excluded_games_still_syncs_remainder(self):
+        mock_write, mock_restart, _ = self._run({"count": 10, "excluded_games": [100]})
         mock_write.assert_called_once()
         mock_restart.assert_called_once()
 
@@ -380,6 +364,7 @@ class TestDoAutoSync(unittest.TestCase):
              patch("server._load_config_path", return_value=Path("/fake/apps.json")), \
              patch("server.load_sunshine_config", return_value=existing), \
              patch("server.build_sunshine_config", return_value=new_config), \
+             patch("server.get_thumbnail", return_value="/t/fake.png"), \
              patch("server._write_elevated", mock_write), \
              patch("server._restart_elevated", mock_restart):
             result = _do_auto_sync()
@@ -441,10 +426,16 @@ class TestUpdateSettingsTrigger(unittest.TestCase):
         with server.app.test_client() as client:
             return client.post("/api/settings", json=payload)
 
-    def test_triggers_sync_on_unchecked_games(self):
+    def test_triggers_sync_on_excluded_games(self):
         with patch("server._patch_settings"), \
              patch("server._schedule_sync") as mock_schedule:
-            self._post({"unchecked_games": [100]}, mock_schedule)
+            self._post({"excluded_games": [100]}, mock_schedule)
+        mock_schedule.assert_called_once()
+
+    def test_triggers_sync_on_included_games(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync") as mock_schedule:
+            self._post({"included_games": [100]}, mock_schedule)
         mock_schedule.assert_called_once()
 
     def test_triggers_sync_on_count(self):

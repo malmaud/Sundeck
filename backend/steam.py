@@ -78,7 +78,7 @@ def get_vdf_path() -> Path | None:
     return max(paths, key=lambda p: p.stat().st_mtime)
 
 
-def get_recent_games(count: int = 10, only_ids: set[int] | None = None) -> list[SteamGame]:
+def get_recent_games(count: int | None = 10, only_ids: set[int] | None = None, fetch_thumbnails: bool = True) -> list[SteamGame]:
     """Return the most recently played Steam games from localconfig.vdf."""
     vdf_path = get_vdf_path()
     if vdf_path is None:
@@ -164,7 +164,7 @@ def get_recent_games(count: int = 10, only_ids: set[int] | None = None) -> list[
     results.sort(reverse=True)
     if only_ids is not None:
         results = [r for r in results if r[1] in only_ids]
-    top = results[:count]
+    top = results[:count] if count is not None else results
     if not top:
         return []
 
@@ -192,15 +192,20 @@ def get_recent_games(count: int = 10, only_ids: set[int] | None = None) -> list[
     if not top:
         return []
 
-    with ThreadPoolExecutor(max_workers=min(len(top), 10)) as executor:
-        thumbnails = list(executor.map(lambda r: _get_thumbnail(r[1]), top))
+    if fetch_thumbnails:
+        with ThreadPoolExecutor(max_workers=min(len(top), 10)) as executor:
+            thumbnails = list(executor.map(lambda r: get_thumbnail(r[1]), top))
+        return [
+            SteamGame(app_id=app_id, name=name, thumbnail=thumbnail, last_played=last_played)
+            for (last_played, app_id, name), thumbnail in zip(top, thumbnails)
+        ]
     return [
-        SteamGame(app_id=app_id, name=name, thumbnail=thumbnail, last_played=last_played)
-        for (last_played, app_id, name), thumbnail in zip(top, thumbnails)
+        SteamGame(app_id=app_id, name=name, thumbnail="", last_played=last_played)
+        for last_played, app_id, name in top
     ]
 
 
-def _get_thumbnail(app_id: int) -> str:
+def get_thumbnail(app_id: int) -> str:
     """Download the Steam header image for app_id if not cached; return local PNG path or empty string."""
     _THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = _THUMBNAIL_CACHE_DIR / f"{app_id}.png"

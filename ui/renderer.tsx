@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import ReactDOM from "react-dom/client";
 
 interface Game {
@@ -11,7 +11,8 @@ interface Game {
 interface Settings {
   config_path: string;
   suggestions: string[];
-  unchecked_games: number[];
+  excluded_games: number[];
+  included_games: number[];
   show_debug: boolean;
   count: number;
   auto_sync: boolean;
@@ -30,15 +31,23 @@ interface LogEntry {
   detail: string;
 }
 
+interface CardAction {
+  label: string;
+  className: string;
+  title: string;
+  onClick: () => void;
+}
+
 interface GameCardProps {
   game: Game;
-  checked: boolean;
-  onToggle: () => void;
+  action: CardAction;
   showDebug: boolean;
 }
 
-async function apiGetGames(count: number): Promise<Game[]> {
-  const res = await fetch(`/api/games?count=${count}`);
+const OTHER_INITIAL_LIMIT = 24;
+
+async function apiGetGames(): Promise<Game[]> {
+  const res = await fetch("/api/games");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json() as Promise<Game[]>;
 }
@@ -59,26 +68,33 @@ async function apiPatchSettings(updates: Partial<Omit<Settings, "suggestions">>)
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 }
 
-
 async function apiGetLog(): Promise<LogEntry[]> {
   const res = await fetch("/api/log");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json() as Promise<LogEntry[]>;
 }
 
-async function apiUpdateConfig(appIds: number[]): Promise<{ status: string; count: number }> {
-  const res = await fetch("/api/config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ app_ids: appIds }),
-  });
+async function apiSync(): Promise<void> {
+  const res = await fetch("/api/sync", { method: "POST" });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data as { status: string; count: number };
 }
 
-function GameCard({ game, checked, onToggle, showDebug }: GameCardProps) {
+function computeAutoSyncIds(games: Game[], count: number, excludedIds: Set<number>): Set<number> {
+  const ids = new Set<number>();
+  let n = 0;
+  for (const g of games) {
+    if (excludedIds.has(g.app_id)) continue;
+    if (n >= count) break;
+    ids.add(g.app_id);
+    n++;
+  }
+  return ids;
+}
+
+function GameCard({ game, action, showDebug }: GameCardProps) {
   const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
@@ -88,14 +104,15 @@ function GameCard({ game, checked, onToggle, showDebug }: GameCardProps) {
   }, []);
 
   return (
-    <div className={`game-card${checked ? " checked" : ""}`}>
-      <input
-        type="checkbox"
-        className="game-check"
-        checked={checked}
-        onChange={onToggle}
-      />
-      {game.thumbnail
+    <div className="game-card">
+      <button
+        className={`card-action ${action.className}`}
+        onClick={action.onClick}
+        title={action.title}
+      >
+        {action.label}
+      </button>
+      {!imgError && game.thumbnail
         ? <>
             <img
               ref={imgRef}
@@ -103,6 +120,7 @@ function GameCard({ game, checked, onToggle, showDebug }: GameCardProps) {
               alt={game.name}
               loading="lazy"
               onLoad={() => setImgLoaded(true)}
+              onError={() => setImgError(true)}
             />
             {!imgLoaded && <div className="game-thumbnail-placeholder loading" aria-hidden="true" />}
           </>
@@ -110,7 +128,6 @@ function GameCard({ game, checked, onToggle, showDebug }: GameCardProps) {
       }
       <div className="game-name-row">
         <div className="game-name" title={game.name}>{game.name}</div>
-
       </div>
       {showDebug && <div className="game-id">App ID: {game.app_id}</div>}
       {game.last_played > 0 && (
@@ -124,12 +141,18 @@ function GameCard({ game, checked, onToggle, showDebug }: GameCardProps) {
 
 function App() {
   const [games, setGames] = useState<Game[]>([]);
-  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
-const [count, setCount] = useState(10);
+  const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set());
+  const [includedIds, setIncludedIds] = useState<Set<number>>(new Set());
+  const [count, setCount] = useState(10);
   const [countInput, setCountInput] = useState("10");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showAllOther, setShowAllOther] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
-  const [settings, setSettings] = useState<Settings>({ config_path: "", suggestions: [], unchecked_games: [], show_debug: false, count: 10, auto_sync: true });
+  const [settings, setSettings] = useState<Settings>({
+    config_path: "", suggestions: [], excluded_games: [], included_games: [],
+    show_debug: false, count: 10, auto_sync: true,
+  });
   const [configPathInput, setConfigPathInput] = useState("");
   const [autoSync, setAutoSync] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -154,23 +177,26 @@ const [count, setCount] = useState(10);
     refreshLog();
   }, [logOpen, refreshLog]);
 
-  const loadGames = useCallback(async (n = count) => {
+  const loadGames = useCallback(async () => {
     setBusy(true);
     try {
-      const [result, s] = await Promise.all([
-        apiGetGames(n),
-        apiGetSettings(),
-      ]);
-      const unchecked = new Set<number>(s.unchecked_games);
+      const [result, s] = await Promise.all([apiGetGames(), apiGetSettings()]);
       setGames(result);
-      setCheckedIds(new Set(result.filter((g) => !unchecked.has(g.app_id)).map((g) => g.app_id)));
+      setExcludedIds(new Set(s.excluded_games));
+      setIncludedIds(new Set(s.included_games));
+      setSettings(s);
+      setCount(s.count);
+      setCountInput(String(s.count));
+      setAutoSync(s.auto_sync);
+      setShowDebug(s.show_debug);
+      setConfigPathInput(s.config_path);
       setStatus(null);
     } catch (e) {
       setStatus({ msg: (e as Error).message, type: "error" });
     } finally {
       setBusy(false);
     }
-  }, [count]);
+  }, []);
 
   useEffect(() => {
     const es = new EventSource("/api/events");
@@ -196,17 +222,7 @@ const [count, setCount] = useState(10);
   }, [refreshLog, loadGames]);
 
   useEffect(() => {
-    apiGetSettings().then((s) => {
-      setSettings(s);
-      setConfigPathInput(s.config_path);
-      setShowDebug(s.show_debug);
-      setAutoSync(s.auto_sync);
-      setCount(s.count);
-      setCountInput(String(s.count));
-      loadGames(s.count);
-    }).catch(() => {
-      loadGames();
-    });
+    loadGames();
     apiGetLog().then(entries => {
       setLogEntries(entries);
       const latest = entries[0];
@@ -217,86 +233,139 @@ const [count, setCount] = useState(10);
     }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function toggleGame(appId: number): void {
-    if (autoSync) setSyncState("syncing");
-    setCheckedIds((prev) => {
+  const autoSyncIds = useMemo(
+    () => computeAutoSyncIds(games, count, excludedIds),
+    [games, count, excludedIds],
+  );
+
+  // ── Section actions ──────────────────────────────────────────────────────
+
+  function excludeGame(appId: number): void {
+    setExcludedIds(prev => {
       const next = new Set(prev);
-      if (next.has(appId)) {
-        next.delete(appId);
-      } else {
-        next.add(appId);
-      }
-      const unchecked = games.filter((g) => !next.has(g.app_id)).map((g) => g.app_id);
-      apiPatchSettings({ unchecked_games: unchecked }).catch(() => {});
+      next.add(appId);
+      apiPatchSettings({ excluded_games: [...next] }).catch(() => {});
       return next;
     });
   }
 
-  async function handleUpdate(): Promise<void> {
-    const appIds = [...checkedIds];
-    if (appIds.length === 0) {
-      setStatus({ msg: "No games selected.", type: "error" });
-      return;
-    }
+  function pinGame(appId: number): void {
+    setIncludedIds(prev => {
+      const next = new Set(prev);
+      next.add(appId);
+      apiPatchSettings({ included_games: [...next] }).catch(() => {});
+      return next;
+    });
+  }
+
+  function unpinGame(appId: number): void {
+    setIncludedIds(prev => {
+      const next = new Set(prev);
+      next.delete(appId);
+      apiPatchSettings({ included_games: [...next] }).catch(() => {});
+      return next;
+    });
+  }
+
+  function restoreGame(appId: number): void {
+    setExcludedIds(prev => {
+      const next = new Set(prev);
+      next.delete(appId);
+      apiPatchSettings({ excluded_games: [...next] }).catch(() => {});
+      return next;
+    });
+  }
+
+  // ── Sections ─────────────────────────────────────────────────────────────
+
+  const matchesSearch = useCallback((g: Game) => {
+    if (!searchQuery.trim()) return true;
+    return g.name.toLowerCase().includes(searchQuery.toLowerCase());
+  }, [searchQuery]);
+
+  const recentGames = useMemo(() =>
+    games.filter(g => autoSyncIds.has(g.app_id) && !includedIds.has(g.app_id) && matchesSearch(g)),
+    [games, autoSyncIds, includedIds, matchesSearch],
+  );
+
+  const pinnedGames = useMemo(() =>
+    games.filter(g => includedIds.has(g.app_id) && !excludedIds.has(g.app_id) && matchesSearch(g)),
+    [games, includedIds, excludedIds, matchesSearch],
+  );
+
+  const excludedGames = useMemo(() =>
+    games.filter(g => excludedIds.has(g.app_id) && matchesSearch(g)),
+    [games, excludedIds, matchesSearch],
+  );
+
+  const otherGames = useMemo(() =>
+    games.filter(g =>
+      !autoSyncIds.has(g.app_id) && !includedIds.has(g.app_id) && !excludedIds.has(g.app_id) && matchesSearch(g)
+    ),
+    [games, autoSyncIds, includedIds, excludedIds, matchesSearch],
+  );
+
+  const displayedOther = showAllOther ? otherGames : otherGames.slice(0, OTHER_INITIAL_LIMIT);
+  const syncedCount = recentGames.length + pinnedGames.length;
+  const totalVisible = recentGames.length + pinnedGames.length + excludedGames.length + otherGames.length;
+
+  async function handleSync(): Promise<void> {
     setBusy(true);
     setSyncState("syncing");
     try {
-      const result = await apiUpdateConfig(appIds);
-      setStatus({ msg: `Synced ${result.count} games.`, type: "success" });
-      if (logOpen) refreshLog();
+      await apiSync();
+      setStatus({ msg: "Sync complete.", type: "success" });
+      refreshLog();
     } catch (e) {
       setStatus({ msg: (e as Error).message, type: "error" });
-      if (logOpen) refreshLog();
+      refreshLog();
     } finally {
       setBusy(false);
       setSyncState("idle");
     }
   }
 
-
   return (
     <>
       <header>
         <div className="header-row">
-        <div className="header-title">
-          <img src="/images/logo.png" className="header-logo" alt="SteamLaunch" />
-          <h1>SteamLaunch</h1>
-        </div>
-        <div className="controls">
-          <label>
-            Number of recent games to sync:
-            <input
-              type="number"
-              value={countInput}
-              min="1"
-              max="9999"
-              onChange={(e) => setCountInput(e.target.value)}
-              onBlur={() => {
-                const n = Math.max(1, parseInt(countInput) || count);
-                setCount(n);
-                setCountInput(String(n));
-                if (autoSync) setSyncState("syncing");
-                apiPatchSettings({ count: n }).catch(() => {});
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
+          <div className="header-title">
+            <img src="/images/logo.png" className="header-logo" alt="SteamLaunch" />
+            <h1>SteamLaunch</h1>
+          </div>
+          <div className="controls">
+            <label>
+              Recent games to sync:
+              <input
+                type="number"
+                value={countInput}
+                min="1"
+                max="9999"
+                onChange={(e) => setCountInput(e.target.value)}
+                onBlur={() => {
                   const n = Math.max(1, parseInt(countInput) || count);
                   setCount(n);
                   setCountInput(String(n));
-                  if (autoSync) setSyncState("syncing");
                   apiPatchSettings({ count: n }).catch(() => {});
-                  loadGames(n);
-                }
-              }}
-            />
-          </label>
-          <button className="btn-secondary" onClick={handleUpdate} disabled={busy}>Manually sync now</button>
-          <button className="btn-secondary" onClick={() => setSettingsOpen((o) => !o)}>Settings</button>
-          {syncState === "syncing" && <span className="sync-status syncing">Syncing…</span>}
-          <button className="btn-secondary activity-btn" onClick={() => setLogOpen((o) => !o)}>
-            Activity{hasLogError && <span className="log-error-badge" />}
-          </button>
-        </div>
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const n = Math.max(1, parseInt(countInput) || count);
+                    setCount(n);
+                    setCountInput(String(n));
+                    apiPatchSettings({ count: n }).catch(() => {});
+                  }
+                }}
+              />
+            </label>
+            <span className="synced-count">{syncedCount} synced</span>
+            <button className="btn-secondary" onClick={handleSync} disabled={busy}>Sync now</button>
+            <button className="btn-secondary" onClick={() => setSettingsOpen((o) => !o)}>Settings</button>
+            {syncState === "syncing" && <span className="sync-status syncing">Syncing…</span>}
+            <button className="btn-secondary activity-btn" onClick={() => setLogOpen((o) => !o)}>
+              Activity{hasLogError && <span className="log-error-badge" />}
+            </button>
+          </div>
         </div>
         {settingsOpen && (
           <div className="settings-panel">
@@ -337,7 +406,6 @@ const [count, setCount] = useState(10);
               />
               Show debug information
             </label>
-
           </div>
         )}
       </header>
@@ -376,17 +444,86 @@ const [count, setCount] = useState(10);
             }
           </div>
         )}
-        <div className="game-grid">
-          {games.map((game) => (
-            <GameCard
-              key={game.app_id}
-              game={game}
-              checked={checkedIds.has(game.app_id)}
-              onToggle={() => toggleGame(game.app_id)}
-              showDebug={showDebug}
-            />
-          ))}
+        <div className="search-bar">
+          <input
+            type="text"
+            placeholder="Search games..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="search-input"
+          />
+          {searchQuery && (
+            <button className="search-clear" onClick={() => setSearchQuery("")}>✕</button>
+          )}
+          <span className="search-count">
+            {searchQuery ? `${totalVisible} of ${games.length}` : `${games.length} games`}
+          </span>
         </div>
+
+        {recentGames.length > 0 && (
+          <section className="game-section">
+            <h2 className="section-header section-recent">
+              Recent
+              <span className="section-desc">{recentGames.length} games synced automatically</span>
+            </h2>
+            <div className="game-grid">
+              {recentGames.map(g => (
+                <GameCard key={g.app_id} game={g} showDebug={showDebug}
+                  action={{ label: "Exclude", className: "action-exclude", title: "Exclude from sync", onClick: () => excludeGame(g.app_id) }} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {pinnedGames.length > 0 && (
+          <section className="game-section">
+            <h2 className="section-header section-pinned">
+              Pinned
+              <span className="section-desc">{pinnedGames.length} games always synced</span>
+            </h2>
+            <div className="game-grid">
+              {pinnedGames.map(g => (
+                <GameCard key={g.app_id} game={g} showDebug={showDebug}
+                  action={{ label: "Unpin", className: "action-unpin", title: "Stop pinning", onClick: () => unpinGame(g.app_id) }} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {excludedGames.length > 0 && (
+          <section className="game-section">
+            <h2 className="section-header section-excluded">
+              Excluded
+              <span className="section-desc">{excludedGames.length} games never synced</span>
+            </h2>
+            <div className="game-grid">
+              {excludedGames.map(g => (
+                <GameCard key={g.app_id} game={g} showDebug={showDebug}
+                  action={{ label: "Restore", className: "action-restore", title: "Remove exclusion", onClick: () => restoreGame(g.app_id) }} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {otherGames.length > 0 && (
+          <section className="game-section">
+            <h2 className="section-header section-other">
+              Other
+              <span className="section-desc">{otherGames.length} games not synced</span>
+            </h2>
+            <div className="game-grid">
+              {displayedOther.map(g => (
+                <GameCard key={g.app_id} game={g} showDebug={showDebug}
+                  action={{ label: "Pin", className: "action-pin", title: "Always sync this game", onClick: () => pinGame(g.app_id) }} />
+              ))}
+            </div>
+            {!showAllOther && otherGames.length > OTHER_INITIAL_LIMIT && (
+              <button className="btn-secondary show-more" onClick={() => setShowAllOther(true)}>
+                Show all {otherGames.length} games
+              </button>
+            )}
+          </section>
+        )}
       </main>
     </>
   );
