@@ -156,7 +156,6 @@ const [count, setCount] = useState(10);
 
   const loadGames = useCallback(async (n = count) => {
     setBusy(true);
-    setStatus({ msg: "Loading games...", type: "loading" });
     try {
       const [result, s] = await Promise.all([
         apiGetGames(n),
@@ -293,7 +292,7 @@ const [count, setCount] = useState(10);
           </label>
           <button className="btn-secondary" onClick={handleUpdate} disabled={busy}>Manually sync now</button>
           <button className="btn-secondary" onClick={() => setSettingsOpen((o) => !o)}>Settings</button>
-          {(syncState === "pending" || syncState === "syncing") && <span className="sync-status syncing">Syncing…</span>}
+          {syncState === "syncing" && <span className="sync-status syncing">Syncing…</span>}
           <button className="btn-secondary activity-btn" onClick={() => setLogOpen((o) => !o)}>
             Activity{hasLogError && <span className="log-error-badge" />}
           </button>

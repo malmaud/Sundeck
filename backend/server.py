@@ -407,6 +407,8 @@ def _do_auto_sync() -> bool:
     config = build_sunshine_config(existing, checked_games)
     if config.model_dump() == existing.model_dump():
         return False
+    _set_sync_state("syncing")
+    _bump_games_version()
     _write_elevated(config_path, config.model_dump_json(by_alias=True, indent=4))
     _restart_elevated()
     return True
@@ -508,9 +510,9 @@ def _try_auto_sync() -> None:
     except Exception:
         _set_sync_state("idle")
         return
-    _set_sync_state("syncing")
     try:
-        if _do_auto_sync():
+        synced = _do_auto_sync()
+        if synced:
             _append_log("auto", True, "Synced games")
     except Exception as exc:
         _append_log("auto", False, str(exc).splitlines()[0] or "Auto-sync failed", detail=traceback.format_exc())
@@ -544,7 +546,6 @@ class _SyncEventHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         if Path(str(event.src_path)).name.lower() in self._filenames:
-            _bump_games_version()
             _schedule_sync()
 
 
