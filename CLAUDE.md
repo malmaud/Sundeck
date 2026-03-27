@@ -50,6 +50,10 @@ cd ui
 npx tsc --noEmit
 ```
 
+## Source control
+
+This project uses [jj (Jujutsu)](https://github.com/jj-vcs/jj) for source control. jj commands should be used instead of git commands.
+
 ## Development notes
 
 - When you finishing making changes to the ui, you should rebuild it before finishing your response.
