@@ -7,6 +7,7 @@ export interface Game {
 
 export interface Settings {
   config_path: string;
+  needs_setup: boolean;
   suggestions: string[];
   excluded_games: number[];
   included_games: number[];

@@ -1,0 +1,13 @@
+{
+  "config_path": "C:\\Program Files\\Apollo\\config\\apps.json",
+  "excluded_games": [
+    250820
+  ],
+  "included_games": [
+    2344520,
+    2396240
+  ],
+  "show_debug": true,
+  "count": 10,
+  "auto_sync": true
+}
