@@ -2,7 +2,7 @@
 
 <img src="images/logo.png" alt="SunDeck logo" width="80" />
 
-A local web app that keeps the Apollo/Sunshine game list automatically in sync with your most recently played Steam games.
+A local web app that automatically keeps the Apollo/Sunshine game list automatically in sync with your most recently played Steam games.
 
 ## Advantages
 
@@ -13,7 +13,7 @@ A local web app that keeps the Apollo/Sunshine game list automatically in sync w
 
 ## Usage
 
-Download the latest release and run `sundeck.exe`. The app will be available at `http://localhost:5000`.
+Download the latest release and run `sundeck.exe`. Your browser will automatically open to `http://localhost:5000` for initial setup. After that, all syncing happens automatically.
 
 ## Development
 
