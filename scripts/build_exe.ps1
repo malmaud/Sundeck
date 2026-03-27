@@ -12,7 +12,7 @@ Pop-Location
 
 Write-Host "==> Bundling Python app with PyInstaller..."
 Push-Location "$ROOT\backend"
-uv run pyinstaller `
+uv run python -m PyInstaller `
   --name sundeck `
   --onedir `
   --clean `
