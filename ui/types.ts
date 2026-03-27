@@ -14,6 +14,7 @@ export interface Settings {
   show_debug: boolean;
   count: number;
   auto_sync: boolean;
+  run_at_startup: boolean;
 }
 
 export interface Status {

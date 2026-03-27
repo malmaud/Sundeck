@@ -1,6 +1,7 @@
 """Tests for server.py — streaming detection, auto-sync logic, and file watcher."""
 import json
 import queue
+import sys
 import tempfile
 import threading
 import time
@@ -753,6 +754,116 @@ class TestNeedsSetup(unittest.TestCase):
                 resp = client.get("/api/settings")
         data = resp.get_json()
         self.assertEqual(data["config_path"], str(resolved))
+
+
+# ---------------------------------------------------------------------------
+# startup.py — registry helpers
+# ---------------------------------------------------------------------------
+
+
+import startup
+from startup import set_run_at_startup, get_run_at_startup
+
+
+class TestStartupRegistry(unittest.TestCase):
+    def _mock_open_key(self):
+        """Return (context_manager_mock, inner_key_mock) for winreg.OpenKey."""
+        key = MagicMock()
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=key)
+        ctx.__exit__ = MagicMock(return_value=False)
+        return ctx, key
+
+    def test_enable_writes_registry_value(self):
+        ctx, key = self._mock_open_key()
+        with patch("startup.winreg.OpenKey", return_value=ctx), \
+             patch("startup.winreg.SetValueEx") as mock_set, \
+             patch("startup.winreg.HKEY_CURRENT_USER", 0x80000001), \
+             patch("startup.winreg.KEY_SET_VALUE", 0x0002), \
+             patch("startup.winreg.REG_SZ", 1):
+            set_run_at_startup(True)
+        mock_set.assert_called_once_with(key, "SunDeck", 0, 1, sys.executable)
+
+    def test_disable_deletes_registry_value(self):
+        ctx, key = self._mock_open_key()
+        with patch("startup.winreg.OpenKey", return_value=ctx), \
+             patch("startup.winreg.DeleteValue") as mock_del, \
+             patch("startup.winreg.HKEY_CURRENT_USER", 0x80000001), \
+             patch("startup.winreg.KEY_SET_VALUE", 0x0002):
+            set_run_at_startup(False)
+        mock_del.assert_called_once_with(key, "SunDeck")
+
+    def test_disable_silently_ignores_already_absent_value(self):
+        ctx, _ = self._mock_open_key()
+        with patch("startup.winreg.OpenKey", return_value=ctx), \
+             patch("startup.winreg.DeleteValue", side_effect=FileNotFoundError), \
+             patch("startup.winreg.HKEY_CURRENT_USER", 0x80000001), \
+             patch("startup.winreg.KEY_SET_VALUE", 0x0002):
+            set_run_at_startup(False)   # must not raise
+
+    def test_get_returns_true_when_value_matches_executable(self):
+        ctx, _ = self._mock_open_key()
+        with patch("startup.winreg.OpenKey", return_value=ctx), \
+             patch("startup.winreg.QueryValueEx", return_value=(sys.executable, 1)), \
+             patch("startup.winreg.HKEY_CURRENT_USER", 0x80000001):
+            self.assertTrue(get_run_at_startup())
+
+    def test_get_returns_false_when_value_points_to_different_exe(self):
+        ctx, _ = self._mock_open_key()
+        with patch("startup.winreg.OpenKey", return_value=ctx), \
+             patch("startup.winreg.QueryValueEx", return_value=(r"C:\other\app.exe", 1)), \
+             patch("startup.winreg.HKEY_CURRENT_USER", 0x80000001):
+            self.assertFalse(get_run_at_startup())
+
+    def test_get_returns_false_when_registry_key_absent(self):
+        with patch("startup.winreg.OpenKey", side_effect=FileNotFoundError), \
+             patch("startup.winreg.HKEY_CURRENT_USER", 0x80000001):
+            self.assertFalse(get_run_at_startup())
+
+
+# ---------------------------------------------------------------------------
+# api_update_settings — run_at_startup handling
+# ---------------------------------------------------------------------------
+
+
+class TestRunAtStartupSetting(unittest.TestCase):
+    def test_enabling_calls_set_run_at_startup_true(self):
+        with patch("server._patch_settings"), \
+             patch("server.set_run_at_startup") as mock_startup:
+            with server.app.test_client() as client:
+                client.post("/api/settings", json={"run_at_startup": True})
+        mock_startup.assert_called_once_with(True)
+
+    def test_disabling_calls_set_run_at_startup_false(self):
+        with patch("server._patch_settings"), \
+             patch("server.set_run_at_startup") as mock_startup:
+            with server.app.test_client() as client:
+                client.post("/api/settings", json={"run_at_startup": False})
+        mock_startup.assert_called_once_with(False)
+
+    def test_does_not_trigger_schedule_sync(self):
+        with patch("server._patch_settings"), \
+             patch("server.set_run_at_startup"), \
+             patch("server._schedule_sync") as mock_schedule:
+            with server.app.test_client() as client:
+                client.post("/api/settings", json={"run_at_startup": True})
+        mock_schedule.assert_not_called()
+
+    def test_get_settings_includes_run_at_startup_field(self):
+        with patch("server._load_settings", return_value=Settings(run_at_startup=True)), \
+             patch("server._load_config_path", return_value=Path(r"C:\fake\apps.json")):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        data = resp.get_json()
+        self.assertIn("run_at_startup", data)
+        self.assertTrue(data["run_at_startup"])
+
+    def test_get_settings_run_at_startup_defaults_true(self):
+        with patch("server._load_settings", return_value=Settings()), \
+             patch("server._load_config_path", return_value=Path(r"C:\fake\apps.json")):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        self.assertTrue(resp.get_json()["run_at_startup"])
 
 
 if __name__ == "__main__":

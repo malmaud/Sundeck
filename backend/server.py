@@ -41,6 +41,7 @@ from sync_engine import (
     _append_log, _save_log,  # noqa: F401 (re-exported for tests)
     _start_watchers,
 )
+from startup import get_run_at_startup, set_run_at_startup
 from tray import _run_tray
 
 flags.DEFINE_integer("port", 5000, "Port to listen on.")
@@ -163,6 +164,8 @@ def api_update_settings() -> Response | tuple[Response, int]:
     if not updates:
         return jsonify({"error": "no recognised fields"}), 400
     _patch_settings(**updates)
+    if "run_at_startup" in updates:
+        set_run_at_startup(updates["run_at_startup"])
     if {"excluded_games", "included_games", "count", "auto_sync", "config_path"} & updates.keys():
         _schedule_sync()
     return jsonify({"status": "ok"})
@@ -286,6 +289,8 @@ def _main(_argv):
         app.run(port=port, debug=True, threaded=True)
     else:
         _check_port(port)
+        # Re-apply startup registration in case the exe path changed (e.g. after an update).
+        set_run_at_startup(_load_settings().run_at_startup)
         flask_thread = threading.Thread(
             target=lambda: app.run(port=port, debug=False, threaded=True, use_reloader=False),
             daemon=True,

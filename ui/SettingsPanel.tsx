@@ -6,6 +6,8 @@ interface SettingsPanelProps {
   suggestions: string[];
   autoSync: boolean;
   setAutoSync: (v: boolean) => void;
+  runAtStartup: boolean;
+  setRunAtStartup: (v: boolean) => void;
   showDebug: boolean;
   setShowDebug: (v: boolean) => void;
 }
@@ -13,6 +15,7 @@ interface SettingsPanelProps {
 export function SettingsPanel({
   configPathInput, setConfigPathInput, suggestions,
   autoSync, setAutoSync,
+  runAtStartup, setRunAtStartup,
   showDebug, setShowDebug,
 }: SettingsPanelProps) {
   return (
@@ -31,6 +34,17 @@ export function SettingsPanel({
         <datalist id="config-path-suggestions">
           {suggestions.map((s) => <option key={s} value={s} />)}
         </datalist>
+      </label>
+      <label className="startup-toggle">
+        <input
+          type="checkbox"
+          checked={runAtStartup}
+          onChange={(e) => {
+            setRunAtStartup(e.target.checked);
+            apiPatchSettings({ run_at_startup: e.target.checked }).catch(() => {});
+          }}
+        />
+        Run at Windows startup
       </label>
       <label className="auto-sync-toggle">
         <input

@@ -22,11 +22,12 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState<Settings>({
     config_path: "", needs_setup: false, suggestions: [], excluded_games: [], included_games: [],
-    show_debug: false, count: 10, auto_sync: true,
+    show_debug: false, count: 10, auto_sync: true, run_at_startup: true,
   });
   const [needsSetup, setNeedsSetup] = useState(false);
   const [configPathInput, setConfigPathInput] = useState("");
   const [autoSync, setAutoSync] = useState(true);
+  const [runAtStartup, setRunAtStartup] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
@@ -60,6 +61,7 @@ function App() {
       setCount(s.count);
       setCountInput(String(s.count));
       setAutoSync(s.auto_sync);
+      setRunAtStartup(s.run_at_startup);
       setShowDebug(s.show_debug);
       setConfigPathInput(s.config_path);
       setNeedsSetup(s.needs_setup);
@@ -247,6 +249,8 @@ function App() {
             suggestions={settings.suggestions}
             autoSync={autoSync}
             setAutoSync={setAutoSync}
+            runAtStartup={runAtStartup}
+            setRunAtStartup={setRunAtStartup}
             showDebug={showDebug}
             setShowDebug={setShowDebug}
           />

@@ -8,6 +8,7 @@ class Settings(BaseModel):
     show_debug: bool = False
     count: int = 10
     auto_sync: bool = True
+    run_at_startup: bool = True
 
 
 class SettingsPatch(BaseModel):
@@ -17,6 +18,7 @@ class SettingsPatch(BaseModel):
     show_debug: bool | None = None
     count: int | None = None
     auto_sync: bool | None = None
+    run_at_startup: bool | None = None
 
     @field_validator("config_path")
     @classmethod
