@@ -7,9 +7,9 @@ A local web app that keeps the Apollo/Sunshine game list automatically in sync w
 ## Advantages
 
 - **Stream closes when your game exits** — no need to manually end the session
-- **Skip Steam Big Picture** — skips the extra step of launching Steam Big Picture and dealing its sluggish UI
-- **Control what appears** — sync your most recently-played games, pin games you always want available, or exclude ones you don't
-- **Always up to date** — your game list syncs automatically when your recently played games change; no manual refresh needed
+- **Skip Steam Big Picture** — skips the extra step of launching Steam Big Picture and dealing with its sluggish UI
+- **Game list is always up to date** — your game list syncs automatically when your recently played games change; no manual refresh needed
+- **Granular control of games** — sync your most recently-played games, pin games you always want available, and exclude ones you don't
 
 ## Usage
 
