@@ -15,6 +15,8 @@ export interface Settings {
   count: number;
   auto_sync: boolean;
   run_at_startup: boolean;
+  desktop_position: "start" | "end";
+  has_desktop_app: boolean;
 }
 
 export interface Status {

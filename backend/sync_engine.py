@@ -180,7 +180,7 @@ def _do_auto_sync() -> bool:
             f"Config path not found: {config_path} — open Settings to correct it."
         )
     existing = load_sunshine_config(config_path)
-    config = build_sunshine_config(existing, synced_games)
+    config = build_sunshine_config(existing, synced_games, desktop_position=settings.desktop_position)
     if config.model_dump() == existing.model_dump():
         return False
     _set_sync_state(SyncState.SYNCING)

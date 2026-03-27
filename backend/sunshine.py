@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from models import DesktopPosition
 from steam import SteamGame, get_recent_games
 
 
@@ -38,11 +39,15 @@ def build_sunshine_config(
     existing: SunshineConfig,
     games: list[SteamGame],
     cli_script: Path = _CLI_SCRIPT_DEFAULT,
+    desktop_position: DesktopPosition = DesktopPosition.END,
 ) -> SunshineConfig:
     """Return a new SunshineConfig with recent Steam games merged in.
 
     Entries previously written by this function (identified by _SUNSHINE_CMD_MARKERS
     in their 'cmd') are replaced; all other entries are preserved.
+
+    If a 'Desktop' app exists among the non-managed entries, desktop_position
+    controls whether it appears before ('start') or after ('end') the game list.
     """
     if _CLI_EXE:
         cmd_template = f"{_CLI_EXE} launch --app_id={{app_id}}"
@@ -50,6 +55,8 @@ def build_sunshine_config(
         uv = shutil.which("uv") or "uv"
         cmd_template = f"{uv} run --directory {cli_script.parent} cli.py launch --app_id={{app_id}}"
     kept = [a for a in existing.apps if not any(m in a.cmd for m in _SUNSHINE_CMD_MARKERS)]
+    desktop = [a for a in kept if a.name == "Desktop"]
+    other_kept = [a for a in kept if a.name != "Desktop"]
     new_apps = [
         SunshineApp.model_validate(
             {
@@ -63,7 +70,11 @@ def build_sunshine_config(
         )
         for game in games
     ]
-    return SunshineConfig(apps=new_apps + kept)
+    if desktop and desktop_position == DesktopPosition.START:
+        apps = desktop + new_apps + other_kept
+    else:
+        apps = new_apps + other_kept + desktop
+    return SunshineConfig(apps=apps)
 
 
 def load_sunshine_config(
@@ -96,6 +107,15 @@ def save_sunshine_config(
 ) -> None:
     config_path.write_text(
         config.model_dump_json(by_alias=True, indent=4), encoding="utf-8"
+    )
+
+
+def has_desktop_app(config_path: Path = _SUNSHINE_CONFIG_DEFAULT) -> bool:
+    """Return True if the config contains a non-managed app named 'Desktop'."""
+    config = load_sunshine_config(config_path)
+    return any(
+        a.name == "Desktop" and not any(m in a.cmd for m in _SUNSHINE_CMD_MARKERS)
+        for a in config.apps
     )
 
 

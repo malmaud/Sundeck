@@ -9,6 +9,11 @@ class SyncState(str, Enum):
     SYNCING = "syncing"
 
 
+class DesktopPosition(str, Enum):
+    START = "start"
+    END = "end"
+
+
 class Settings(BaseModel):
     config_path: str | None = None
     excluded_games: list[int] = Field(default_factory=list)
@@ -17,6 +22,7 @@ class Settings(BaseModel):
     count: int = 10
     auto_sync: bool = True
     run_at_startup: bool = True
+    desktop_position: DesktopPosition = DesktopPosition.END
 
 
 class SettingsPatch(BaseModel):
@@ -27,6 +33,7 @@ class SettingsPatch(BaseModel):
     count: int | None = None
     auto_sync: bool | None = None
     run_at_startup: bool | None = None
+    desktop_position: DesktopPosition | None = None
 
     @field_validator("config_path")
     @classmethod

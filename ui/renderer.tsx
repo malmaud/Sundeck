@@ -23,6 +23,7 @@ function App() {
   const [settings, setSettings] = useState<Settings>({
     config_path: "", needs_setup: false, suggestions: [], excluded_games: [], included_games: [],
     show_debug: false, count: 10, auto_sync: true, run_at_startup: true,
+    desktop_position: "end", has_desktop_app: false,
   });
   const [needsSetup, setNeedsSetup] = useState(false);
   const [configPathInput, setConfigPathInput] = useState("");
@@ -236,7 +237,7 @@ function App() {
             <span className="synced-count">{syncedCount} synced</span>
             <button className="btn-secondary" onClick={handleSync} disabled={busy}>Sync now</button>
             <button className="btn-secondary" onClick={() => setSettingsOpen((o) => !o)}>Settings</button>
-            {syncState === "syncing" && <span className="sync-status syncing">Syncing…</span>}
+            {(syncState === "pending" || syncState === "syncing") && <span className="sync-status syncing">Syncing…</span>}
             <button className="btn-secondary activity-btn" onClick={() => setLogOpen((o) => !o)}>
               Activity{hasLogError && <span className="log-error-badge" />}
             </button>
@@ -253,6 +254,9 @@ function App() {
             setRunAtStartup={setRunAtStartup}
             showDebug={showDebug}
             setShowDebug={setShowDebug}
+            hasDesktopApp={settings.has_desktop_app}
+            desktopPosition={settings.desktop_position}
+            setDesktopPosition={(v) => setSettings(s => ({ ...s, desktop_position: v }))}
           />
         )}
       </header>

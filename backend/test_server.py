@@ -11,9 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import server
 import sync_engine
-from models import SyncState
+from models import DesktopPosition, SyncState
 from server import Settings, _do_auto_sync, _is_streaming_active, _try_auto_sync, _SyncEventHandler, _schedule_sync, _set_sync_state, _get_sync_state
 from steam import SteamGame
+from sunshine import SunshineApp, SunshineConfig, build_sunshine_config, has_desktop_app
 
 
 FAKE_GAMES = [
@@ -865,6 +866,266 @@ class TestRunAtStartupSetting(unittest.TestCase):
             with server.app.test_client() as client:
                 resp = client.get("/api/settings")
         self.assertTrue(resp.get_json()["run_at_startup"])
+
+
+# ---------------------------------------------------------------------------
+# build_sunshine_config — desktop_position
+# ---------------------------------------------------------------------------
+
+
+def _make_config(*apps: SunshineApp) -> SunshineConfig:
+    return SunshineConfig(apps=list(apps))
+
+
+def _desktop(**extra) -> SunshineApp:
+    return SunshineApp.model_validate({"name": "Desktop", "cmd": "", **extra})
+
+
+def _managed(app_id: int) -> SunshineApp:
+    return SunshineApp.model_validate({"name": f"Game {app_id}", "cmd": f"launch.py --app_id={app_id}"})
+
+
+def _other(name: str) -> SunshineApp:
+    return SunshineApp.model_validate({"name": name, "cmd": "some_other_cmd"})
+
+
+_FAKE_GAMES = [
+    SteamGame(app_id=100, name="Half-Life", thumbnail="/t/100.png"),
+    SteamGame(app_id=200, name="Portal", thumbnail="/t/200.png"),
+]
+
+
+class TestBuildSunshineConfigDesktopPosition(unittest.TestCase):
+    def _build(self, existing_apps, desktop_position="end"):
+        existing = _make_config(*existing_apps)
+        return build_sunshine_config(existing, _FAKE_GAMES, desktop_position=desktop_position)
+
+    def _names(self, config: SunshineConfig) -> list[str]:
+        return [a.name for a in config.apps]
+
+    def test_desktop_at_end_by_default(self):
+        config = self._build([_desktop(), _other("Settings")])
+        names = self._names(config)
+        self.assertEqual(names[-1], "Desktop")
+
+    def test_desktop_at_end_when_explicit(self):
+        config = self._build([_desktop()], desktop_position="end")
+        names = self._names(config)
+        self.assertEqual(names[-1], "Desktop")
+
+    def test_desktop_at_start_when_requested(self):
+        config = self._build([_desktop()], desktop_position="start")
+        names = self._names(config)
+        self.assertEqual(names[0], "Desktop")
+
+    def test_games_are_present_with_desktop_at_start(self):
+        config = self._build([_desktop()], desktop_position="start")
+        names = self._names(config)
+        self.assertIn("Half-Life", names)
+        self.assertIn("Portal", names)
+
+    def test_games_are_present_with_desktop_at_end(self):
+        config = self._build([_desktop()], desktop_position="end")
+        names = self._names(config)
+        self.assertIn("Half-Life", names)
+        self.assertIn("Portal", names)
+
+    def test_no_desktop_app_unaffected_by_position(self):
+        config_start = self._build([_other("Settings")], desktop_position="start")
+        config_end = self._build([_other("Settings")], desktop_position="end")
+        self.assertEqual(self._names(config_start), self._names(config_end))
+
+    def test_other_non_managed_apps_preserved_after_games(self):
+        config = self._build([_desktop(), _other("Settings")], desktop_position="end")
+        names = self._names(config)
+        # Games come first, then Settings, then Desktop
+        game_indices = [i for i, n in enumerate(names) if n in {"Half-Life", "Portal"}]
+        settings_idx = names.index("Settings")
+        self.assertTrue(all(gi < settings_idx for gi in game_indices))
+
+    def test_managed_apps_replaced_not_kept(self):
+        config = self._build([_managed(999)])
+        names = self._names(config)
+        self.assertNotIn("Game 999", names)
+
+    def test_desktop_at_start_comes_before_all_games(self):
+        config = self._build([_desktop()], desktop_position="start")
+        names = self._names(config)
+        desktop_idx = names.index("Desktop")
+        game_indices = [i for i, n in enumerate(names) if n in {"Half-Life", "Portal"}]
+        self.assertTrue(all(desktop_idx < gi for gi in game_indices))
+
+
+# ---------------------------------------------------------------------------
+# has_desktop_app
+# ---------------------------------------------------------------------------
+
+
+class TestHasDesktopApp(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._config_path = Path(self._tmpdir.name) / "apps.json"
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _write_config(self, apps: list[dict]) -> None:
+        self._config_path.write_text(json.dumps({"apps": apps}), encoding="utf-8")
+
+    def test_returns_true_when_desktop_app_present(self):
+        self._write_config([{"name": "Desktop", "cmd": ""}])
+        self.assertTrue(has_desktop_app(self._config_path))
+
+    def test_returns_false_when_no_desktop_app(self):
+        self._write_config([{"name": "Half-Life", "cmd": "launch.py --app_id=70"}])
+        self.assertFalse(has_desktop_app(self._config_path))
+
+    def test_returns_false_when_apps_list_empty(self):
+        self._write_config([])
+        self.assertFalse(has_desktop_app(self._config_path))
+
+    def test_returns_false_when_file_missing(self):
+        self.assertFalse(has_desktop_app(self._config_path))
+
+    def test_returns_false_when_desktop_is_managed(self):
+        # A managed app named "Desktop" (has our cmd marker) should not count
+        self._write_config([{"name": "Desktop", "cmd": "launch.py --app_id=123"}])
+        self.assertFalse(has_desktop_app(self._config_path))
+
+    def test_returns_true_with_mixed_apps(self):
+        self._write_config([
+            {"name": "Half-Life", "cmd": "launch.py --app_id=70"},
+            {"name": "Desktop", "cmd": ""},
+        ])
+        self.assertTrue(has_desktop_app(self._config_path))
+
+
+# ---------------------------------------------------------------------------
+# _do_auto_sync — desktop_position forwarded to build_sunshine_config
+# ---------------------------------------------------------------------------
+
+
+class TestDoAutoSyncDesktopPosition(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._config_path = Path(self._tmpdir.name) / "apps.json"
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_passes_desktop_position_start_to_builder(self):
+        captured = {}
+
+        def fake_build(existing, games, **kwargs):
+            captured["desktop_position"] = kwargs.get("desktop_position")
+            m = MagicMock()
+            m.model_dump_json.return_value = "{}"
+            return m
+
+        with patch("sync_engine._load_settings", return_value=Settings(count=10, desktop_position=DesktopPosition.START)), \
+             patch("sync_engine.get_recent_games", return_value=FAKE_GAMES), \
+             patch("sync_engine._load_config_path", return_value=self._config_path), \
+             patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
+             patch("sync_engine.build_sunshine_config", side_effect=fake_build), \
+             patch("sync_engine.get_thumbnail", return_value="/t/fake.png"), \
+             patch("sync_engine._write_elevated"), \
+             patch("sync_engine._restart_elevated"):
+            _do_auto_sync()
+
+        self.assertEqual(captured["desktop_position"], DesktopPosition.START)
+
+    def test_passes_desktop_position_end_to_builder(self):
+        captured = {}
+
+        def fake_build(existing, games, **kwargs):
+            captured["desktop_position"] = kwargs.get("desktop_position")
+            m = MagicMock()
+            m.model_dump_json.return_value = "{}"
+            return m
+
+        with patch("sync_engine._load_settings", return_value=Settings(count=10, desktop_position=DesktopPosition.END)), \
+             patch("sync_engine.get_recent_games", return_value=FAKE_GAMES), \
+             patch("sync_engine._load_config_path", return_value=self._config_path), \
+             patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
+             patch("sync_engine.build_sunshine_config", side_effect=fake_build), \
+             patch("sync_engine.get_thumbnail", return_value="/t/fake.png"), \
+             patch("sync_engine._write_elevated"), \
+             patch("sync_engine._restart_elevated"):
+            _do_auto_sync()
+
+        self.assertEqual(captured["desktop_position"], DesktopPosition.END)
+
+
+# ---------------------------------------------------------------------------
+# api_get_settings — has_desktop_app field
+# ---------------------------------------------------------------------------
+
+
+class TestGetSettingsHasDesktopApp(unittest.TestCase):
+    def test_returns_true_when_has_desktop_app(self):
+        with patch("server._load_settings", return_value=Settings(config_path=r"C:\fake\apps.json")), \
+             patch("server._load_config_path", return_value=Path(r"C:\fake\apps.json")), \
+             patch("server.has_desktop_app", return_value=True):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        self.assertTrue(resp.get_json()["has_desktop_app"])
+
+    def test_returns_false_when_no_desktop_app(self):
+        with patch("server._load_settings", return_value=Settings(config_path=r"C:\fake\apps.json")), \
+             patch("server._load_config_path", return_value=Path(r"C:\fake\apps.json")), \
+             patch("server.has_desktop_app", return_value=False):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        self.assertFalse(resp.get_json()["has_desktop_app"])
+
+    def test_returns_false_when_has_desktop_app_raises(self):
+        with patch("server._load_settings", return_value=Settings(config_path=r"C:\fake\apps.json")), \
+             patch("server._load_config_path", return_value=Path(r"C:\fake\apps.json")), \
+             patch("server.has_desktop_app", side_effect=OSError("no file")):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        self.assertFalse(resp.get_json()["has_desktop_app"])
+
+    def test_returns_desktop_position_default_end(self):
+        with patch("server._load_settings", return_value=Settings()), \
+             patch("server._load_config_path", return_value=Path(r"C:\fake\apps.json")), \
+             patch("server.has_desktop_app", return_value=False):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        self.assertEqual(resp.get_json()["desktop_position"], "end")
+
+
+# ---------------------------------------------------------------------------
+# api_update_settings — desktop_position triggers sync
+# ---------------------------------------------------------------------------
+
+
+class TestDesktopPositionSettingsTrigger(unittest.TestCase):
+    def test_triggers_sync_on_desktop_position(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync") as mock_schedule:
+            with server.app.test_client() as client:
+                client.post("/api/settings", json={"desktop_position": "start"})
+        mock_schedule.assert_called_once()
+
+    def test_rejects_invalid_desktop_position(self):
+        with server.app.test_client() as client:
+            resp = client.post("/api/settings", json={"desktop_position": "middle"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_accepts_start(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync"):
+            with server.app.test_client() as client:
+                resp = client.post("/api/settings", json={"desktop_position": "start"})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_accepts_end(self):
+        with patch("server._patch_settings"), \
+             patch("server._schedule_sync"):
+            with server.app.test_client() as client:
+                resp = client.post("/api/settings", json={"desktop_position": "end"})
+        self.assertEqual(resp.status_code, 200)
 
 
 if __name__ == "__main__":

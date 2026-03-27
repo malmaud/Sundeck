@@ -10,6 +10,9 @@ interface SettingsPanelProps {
   setRunAtStartup: (v: boolean) => void;
   showDebug: boolean;
   setShowDebug: (v: boolean) => void;
+  hasDesktopApp: boolean;
+  desktopPosition: "start" | "end";
+  setDesktopPosition: (v: "start" | "end") => void;
 }
 
 export function SettingsPanel({
@@ -17,6 +20,7 @@ export function SettingsPanel({
   autoSync, setAutoSync,
   runAtStartup, setRunAtStartup,
   showDebug, setShowDebug,
+  hasDesktopApp, desktopPosition, setDesktopPosition,
 }: SettingsPanelProps) {
   return (
     <div className="settings-panel">
@@ -57,6 +61,22 @@ export function SettingsPanel({
         />
         Auto-sync when game list changes
       </label>
+      {hasDesktopApp && (
+        <label className="desktop-position-toggle">
+          Desktop app position:
+          <select
+            value={desktopPosition}
+            onChange={(e) => {
+              const v = e.target.value as "start" | "end";
+              setDesktopPosition(v);
+              apiPatchSettings({ desktop_position: v }).catch(() => {});
+            }}
+          >
+            <option value="start">Before games</option>
+            <option value="end">After games</option>
+          </select>
+        </label>
+      )}
       <label className="debug-toggle">
         <input
           type="checkbox"

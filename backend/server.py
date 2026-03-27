@@ -30,7 +30,7 @@ from persistence import (
     _KNOWN_CONFIG_PATHS, _LOGS_DIR,
 )
 from steam import get_recent_games, get_thumbnail
-from sunshine import get_managed_apps
+from sunshine import get_managed_apps, has_desktop_app
 from sync_engine import (
     _do_auto_sync, _is_streaming_active, _try_auto_sync,  # noqa: F401 (re-exported for tests)
     _SyncEventHandler, _schedule_sync, _set_sync_state, _get_sync_state,  # noqa: F401
@@ -147,10 +147,15 @@ def api_games() -> Response:
 @app.route("/api/settings", methods=["GET"])
 def api_get_settings() -> Response:
     settings = _load_settings()
+    config_path = _load_config_path()
     data = settings.model_dump()
-    data["config_path"] = str(_load_config_path())
+    data["config_path"] = str(config_path)
     data["needs_setup"] = settings.config_path is None
     data["suggestions"] = [p for p in _KNOWN_CONFIG_PATHS if Path(p).exists()]
+    try:
+        data["has_desktop_app"] = has_desktop_app(config_path)
+    except Exception:
+        data["has_desktop_app"] = False
     return jsonify(data)
 
 
@@ -166,7 +171,7 @@ def api_update_settings() -> Response | tuple[Response, int]:
     _patch_settings(**updates)
     if "run_at_startup" in updates:
         set_run_at_startup(updates["run_at_startup"])
-    if {"excluded_games", "included_games", "count", "auto_sync", "config_path"} & updates.keys():
+    if {"excluded_games", "included_games", "count", "auto_sync", "config_path", "desktop_position"} & updates.keys():
         _schedule_sync()
     return jsonify({"status": "ok"})
 
