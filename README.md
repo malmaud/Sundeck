@@ -44,3 +44,7 @@ This will automatically reload the server whenever the server or UI source code 
 - Writes the game list to Apollo/Sunshine's `apps.json` and restarts the service
 - Auto-syncs when `localconfig.vdf` changes or when sync-relevant settings are changed
 - Defers sync while a streaming session is active
+
+## AI disclaimer
+
+This project was built with the assistance of Claude Code, but all code was manually reviewed and adjusted by the human author.
