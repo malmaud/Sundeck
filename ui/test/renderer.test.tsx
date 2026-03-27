@@ -37,6 +37,7 @@ function mockFetch(handlers: Record<string, FetchHandler>): void {
 
 const DEFAULT_SETTINGS = {
   config_path: "C:\\Program Files\\Apollo\\config\\apps.json",
+  needs_setup: false,
   suggestions: [
     "C:\\Program Files\\Apollo\\config\\apps.json",
     "C:\\Program Files\\Sunshine\\config\\apps.json",
@@ -365,5 +366,86 @@ describe("search", () => {
     expect(screen.getByText("Half-Life")).toBeInTheDocument();
     expect(screen.getByText("Portal")).toBeInTheDocument();
     expect(screen.getByText("Dota 2")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setup modal
+// ---------------------------------------------------------------------------
+
+describe("setup modal", () => {
+  test("shows setup modal when needs_setup is true", async () => {
+    mockFetch({
+      "GET /api/games": () => ({ body: GAMES }),
+      "GET /api/settings": () => ({ body: { ...DEFAULT_SETTINGS, needs_setup: true } }),
+      "POST /api/settings": () => ({ body: { status: "ok" } }),
+      "GET /api/log": () => ({ body: [] }),
+    });
+    render(<App />);
+    await screen.findByText("Welcome to SteamLaunch");
+  });
+
+  test("does not show setup modal when needs_setup is false", async () => {
+    await renderApp();
+    expect(screen.queryByText("Welcome to SteamLaunch")).toBeNull();
+  });
+
+  test("pre-fills config path input with default value", async () => {
+    mockFetch({
+      "GET /api/games": () => ({ body: GAMES }),
+      "GET /api/settings": () => ({ body: { ...DEFAULT_SETTINGS, needs_setup: true } }),
+      "POST /api/settings": () => ({ body: { status: "ok" } }),
+      "GET /api/log": () => ({ body: [] }),
+    });
+    render(<App />);
+    await screen.findByText("Welcome to SteamLaunch");
+    expect(screen.getByDisplayValue(DEFAULT_SETTINGS.config_path)).toBeInTheDocument();
+  });
+
+  test("dismisses modal after saving config path", async () => {
+    let settingsCallCount = 0;
+    mockFetch({
+      "GET /api/games": () => ({ body: GAMES }),
+      "GET /api/settings": () => {
+        settingsCallCount++;
+        return {
+          body: settingsCallCount <= 1
+            ? { ...DEFAULT_SETTINGS, needs_setup: true }
+            : { ...DEFAULT_SETTINGS, needs_setup: false },
+        };
+      },
+      "POST /api/settings": () => ({ body: { status: "ok" } }),
+      "GET /api/log": () => ({ body: [] }),
+    });
+    render(<App />);
+    await screen.findByText("Welcome to SteamLaunch");
+
+    fireEvent.click(screen.getByText("Save & Continue"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Welcome to SteamLaunch")).toBeNull();
+    });
+  });
+
+  test("sends config_path to API on save", async () => {
+    mockFetch({
+      "GET /api/games": () => ({ body: GAMES }),
+      "GET /api/settings": () => ({ body: { ...DEFAULT_SETTINGS, needs_setup: true } }),
+      "POST /api/settings": () => ({ body: { status: "ok" } }),
+      "GET /api/log": () => ({ body: [] }),
+    });
+    render(<App />);
+    await screen.findByText("Welcome to SteamLaunch");
+
+    fireEvent.click(screen.getByText("Save & Continue"));
+
+    await waitFor(() => {
+      const fetchMock = (globalThis as any).fetch as jest.Mock;
+      const postCall = fetchMock.mock.calls.find(
+        ([url, opts]: [string, RequestInit?]) => url === "/api/settings" && opts?.method === "POST"
+      );
+      expect(postCall).toBeTruthy();
+      expect(JSON.parse(postCall[1].body).config_path).toBe(DEFAULT_SETTINGS.config_path);
+    });
   });
 });

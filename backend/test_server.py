@@ -157,9 +157,9 @@ class TestIsStreamingActive(unittest.TestCase):
 
 
 class TestTryAutoSync(unittest.TestCase):
-    def _run(self, auto_sync=True, streaming=False, sync_returns=False, sync_raises=None):
+    def _run(self, auto_sync=True, streaming=False, sync_returns=False, sync_raises=None, config_path=r"C:\fake\apps.json"):
         """Call _try_auto_sync with mocks; return (sync_called, log_mock, schedule_mock)."""
-        settings = Settings(auto_sync=auto_sync)
+        settings = Settings(auto_sync=auto_sync, config_path=config_path)
         side = sync_raises if sync_raises else MagicMock(return_value=sync_returns)
         mock_sync = MagicMock(side_effect=side)
         mock_log = MagicMock()
@@ -209,6 +209,16 @@ class TestTryAutoSync(unittest.TestCase):
         _, mock_log, _ = self._run(auto_sync=False)
         mock_log.assert_not_called()
 
+    def test_does_not_sync_when_config_path_not_set(self):
+        synced, _, _ = self._run(auto_sync=True, config_path=None)
+        self.assertFalse(synced)
+
+    def test_resets_to_idle_when_config_path_not_set(self):
+        _set_sync_state("pending")
+        synced, _, _ = self._run(auto_sync=True, config_path=None)
+        self.assertFalse(synced)
+        self.assertEqual(_get_sync_state(), "idle")
+
 
 # ---------------------------------------------------------------------------
 # sync state transitions
@@ -229,7 +239,7 @@ class TestSyncState(unittest.TestCase):
         self.assertEqual(_get_sync_state(), "pending")
 
     def test_try_auto_sync_resets_to_idle_after_success(self):
-        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True)), \
+        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True, config_path=r"C:\fake")), \
              patch("sync_engine._is_streaming_active", return_value=False), \
              patch("sync_engine._do_auto_sync", return_value=True), \
              patch("sync_engine._append_log"):
@@ -238,7 +248,7 @@ class TestSyncState(unittest.TestCase):
         self.assertEqual(_get_sync_state(), "idle")
 
     def test_try_auto_sync_resets_to_idle_when_sync_raises(self):
-        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True)), \
+        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True, config_path=r"C:\fake")), \
              patch("sync_engine._is_streaming_active", return_value=False), \
              patch("sync_engine._do_auto_sync", side_effect=RuntimeError("fail")), \
              patch("sync_engine._append_log"):
@@ -255,7 +265,7 @@ class TestSyncState(unittest.TestCase):
 
     def test_try_auto_sync_stays_pending_when_streaming(self):
         _set_sync_state("pending")
-        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True)), \
+        with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True, config_path=r"C:\fake")), \
              patch("sync_engine._is_streaming_active", return_value=True), \
              patch("sync_engine._schedule_sync"):
             _try_auto_sync()
@@ -323,6 +333,13 @@ class TestSyncEventHandler(unittest.TestCase):
 
 
 class TestDoAutoSync(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._config_path = Path(self._tmpdir.name) / "apps.json"
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
     def _run(self, settings_data, games=None):
         """Run _do_auto_sync with the given settings and games; return (mock_write, mock_restart, result)."""
         if games is None:
@@ -335,7 +352,7 @@ class TestDoAutoSync(unittest.TestCase):
 
         with patch("sync_engine._load_settings", return_value=settings), \
              patch("sync_engine.get_recent_games", return_value=games), \
-             patch("sync_engine._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("sync_engine._load_config_path", return_value=self._config_path), \
              patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
              patch("sync_engine.build_sunshine_config", return_value=fake_config), \
              patch("sync_engine.get_thumbnail", return_value="/t/fake.png"), \
@@ -372,7 +389,7 @@ class TestDoAutoSync(unittest.TestCase):
 
         with patch("sync_engine._load_settings", return_value=Settings(count=10, excluded_games=[100])), \
              patch("sync_engine.get_recent_games", return_value=FAKE_GAMES), \
-             patch("sync_engine._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("sync_engine._load_config_path", return_value=self._config_path), \
              patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
              patch("sync_engine.build_sunshine_config", side_effect=fake_build), \
              patch("sync_engine.get_thumbnail", return_value="/t/200.png"), \
@@ -387,7 +404,7 @@ class TestDoAutoSync(unittest.TestCase):
     def test_fetches_all_games_without_thumbnails(self):
         with patch("sync_engine._load_settings", return_value=Settings(count=5)), \
              patch("sync_engine.get_recent_games", return_value=[]) as mock_get, \
-             patch("sync_engine._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("sync_engine._load_config_path", return_value=self._config_path), \
              patch("sync_engine.load_sunshine_config", return_value=MagicMock()), \
              patch("sync_engine.build_sunshine_config", return_value=MagicMock()), \
              patch("sync_engine._write_elevated"), \
@@ -397,7 +414,7 @@ class TestDoAutoSync(unittest.TestCase):
         mock_get.assert_called_once_with(count=None, fetch_thumbnails=False)
 
     def test_write_targets_configured_path(self):
-        expected = Path("/custom/apps.json")
+        expected = self._config_path
         mock_write = MagicMock()
         fake_config = MagicMock()
         fake_config.model_dump_json.return_value = "{}"
@@ -431,7 +448,7 @@ class TestDoAutoSync(unittest.TestCase):
 
         with patch("sync_engine._load_settings", return_value=Settings(count=10)), \
              patch("sync_engine.get_recent_games", return_value=FAKE_GAMES), \
-             patch("sync_engine._load_config_path", return_value=Path("/fake/apps.json")), \
+             patch("sync_engine._load_config_path", return_value=self._config_path), \
              patch("sync_engine.load_sunshine_config", return_value=existing), \
              patch("sync_engine.build_sunshine_config", return_value=new_config), \
              patch("sync_engine.get_thumbnail", return_value="/t/fake.png"), \
@@ -452,6 +469,16 @@ class TestDoAutoSync(unittest.TestCase):
     def test_returns_false_when_config_unchanged(self):
         _, _, result = self._run_noop()
         self.assertFalse(result)
+
+    def test_raises_when_config_dir_missing(self):
+        bad_path = Path(self._tmpdir.name) / "nonexistent" / "apps.json"
+        with patch("sync_engine._load_settings", return_value=Settings(count=10)), \
+             patch("sync_engine.get_recent_games", return_value=FAKE_GAMES), \
+             patch("sync_engine._load_config_path", return_value=bad_path), \
+             patch("sync_engine.get_thumbnail", return_value="/t/fake.png"):
+            with self.assertRaises(RuntimeError) as ctx:
+                _do_auto_sync()
+        self.assertIn("Config path not found", str(ctx.exception))
 
 
 # ---------------------------------------------------------------------------
@@ -519,11 +546,11 @@ class TestUpdateSettingsTrigger(unittest.TestCase):
             self._post({"auto_sync": True}, mock_schedule)
         mock_schedule.assert_called_once()
 
-    def test_does_not_trigger_on_config_path(self):
+    def test_triggers_sync_on_config_path(self):
         with patch("server._patch_settings"), \
              patch("server._schedule_sync") as mock_schedule:
             self._post({"config_path": r"C:\foo\apps.json"}, mock_schedule)
-        mock_schedule.assert_not_called()
+        mock_schedule.assert_called_once()
 
     def test_does_not_trigger_on_show_debug(self):
         with patch("server._patch_settings"), \
@@ -692,6 +719,40 @@ class TestApiEventsRoute(unittest.TestCase):
             chunk = chunk.decode()
         self.assertIn("event: custom_event", chunk)
         self.assertIn('"hello": "world"', chunk)
+
+
+# ---------------------------------------------------------------------------
+# api_get_settings — needs_setup flag
+# ---------------------------------------------------------------------------
+
+
+class TestNeedsSetup(unittest.TestCase):
+    """Verify api_get_settings returns needs_setup flag based on config_path."""
+
+    def test_needs_setup_true_when_config_path_not_set(self):
+        with patch("server._load_settings", return_value=Settings()), \
+             patch("server._load_config_path", return_value=Path(r"C:\Program Files\Apollo\config\apps.json")):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        data = resp.get_json()
+        self.assertTrue(data["needs_setup"])
+
+    def test_needs_setup_false_when_config_path_set(self):
+        with patch("server._load_settings", return_value=Settings(config_path=r"C:\custom\apps.json")), \
+             patch("server._load_config_path", return_value=Path(r"C:\custom\apps.json")):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        data = resp.get_json()
+        self.assertFalse(data["needs_setup"])
+
+    def test_returns_resolved_config_path(self):
+        resolved = Path(r"C:\Program Files\Apollo\config\apps.json")
+        with patch("server._load_settings", return_value=Settings()), \
+             patch("server._load_config_path", return_value=resolved):
+            with server.app.test_client() as client:
+                resp = client.get("/api/settings")
+        data = resp.get_json()
+        self.assertEqual(data["config_path"], str(resolved))
 
 
 if __name__ == "__main__":

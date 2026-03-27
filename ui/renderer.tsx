@@ -7,6 +7,7 @@ import { apiGetGames, apiGetSettings, apiPatchSettings, apiGetLog, apiSync } fro
 import { computeAutoSyncIds } from "./utils";
 import { GameCard } from "./GameCard";
 import { SettingsPanel } from "./SettingsPanel";
+import { SetupModal } from "./SetupModal";
 import { LogPanel } from "./LogPanel";
 
 function App() {
@@ -20,9 +21,10 @@ function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState<Settings>({
-    config_path: "", suggestions: [], excluded_games: [], included_games: [],
+    config_path: "", needs_setup: false, suggestions: [], excluded_games: [], included_games: [],
     show_debug: false, count: 10, auto_sync: true,
   });
+  const [needsSetup, setNeedsSetup] = useState(false);
   const [configPathInput, setConfigPathInput] = useState("");
   const [autoSync, setAutoSync] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -60,6 +62,7 @@ function App() {
       setAutoSync(s.auto_sync);
       setShowDebug(s.show_debug);
       setConfigPathInput(s.config_path);
+      setNeedsSetup(s.needs_setup);
       setStatus(null);
     } catch (e) {
       setStatus({ msg: (e as Error).message, type: "error" });
@@ -343,6 +346,13 @@ function App() {
           </section>
         )}
       </main>
+      {needsSetup && (
+        <SetupModal
+          defaultPath={configPathInput}
+          suggestions={settings.suggestions}
+          onSave={() => { setNeedsSetup(false); loadGames(); }}
+        />
+      )}
     </>
   );
 }

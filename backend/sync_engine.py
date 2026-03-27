@@ -167,6 +167,10 @@ def _do_auto_sync() -> bool:
         g.thumbnail = get_thumbnail(g.app_id)
 
     config_path = _load_config_path()
+    if not config_path.parent.exists():
+        raise RuntimeError(
+            f"Config path not found: {config_path} — open Settings to correct it."
+        )
     existing = load_sunshine_config(config_path)
     config = build_sunshine_config(existing, synced_games)
     if config.model_dump() == existing.model_dump():
@@ -181,7 +185,11 @@ def _do_auto_sync() -> bool:
 def _try_auto_sync() -> None:
     """Attempt an auto-sync if enabled; defer while streaming."""
     try:
-        if not _load_settings().auto_sync:
+        settings = _load_settings()
+        if not settings.auto_sync:
+            _set_sync_state("idle")
+            return
+        if settings.config_path is None:
             _set_sync_state("idle")
             return
         if _is_streaming_active():

@@ -145,8 +145,10 @@ def api_games() -> Response:
 
 @app.route("/api/settings", methods=["GET"])
 def api_get_settings() -> Response:
-    data = _load_settings().model_dump()
+    settings = _load_settings()
+    data = settings.model_dump()
     data["config_path"] = str(_load_config_path())
+    data["needs_setup"] = settings.config_path is None
     data["suggestions"] = [p for p in _KNOWN_CONFIG_PATHS if Path(p).exists()]
     return jsonify(data)
 
@@ -161,7 +163,7 @@ def api_update_settings() -> Response | tuple[Response, int]:
     if not updates:
         return jsonify({"error": "no recognised fields"}), 400
     _patch_settings(**updates)
-    if {"excluded_games", "included_games", "count", "auto_sync"} & updates.keys():
+    if {"excluded_games", "included_games", "count", "auto_sync", "config_path"} & updates.keys():
         _schedule_sync()
     return jsonify({"status": "ok"})
 
