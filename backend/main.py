@@ -1,8 +1,8 @@
-"""Single entry point for the steamlaunch executable.
+"""Single entry point for the sundeck executable.
 
 When invoked as:
-  steamlaunch launch --app_id=X   → launches the game via CLI
-  steamlaunch                      → starts the UI server
+  sundeck launch --app_id=X   → launches the game via CLI
+  sundeck                      → starts the UI server
 """
 import sys
 

@@ -11,7 +11,7 @@ from steam import SteamGame, get_recent_games
 
 
 _SUNSHINE_CONFIG_DEFAULT = Path(r"C:\Program Files\Apollo\config\apps.json")
-_SUNSHINE_CMD_MARKERS = ["launch.py", "cli.py launch", "cli.exe launch", "steamlaunch.exe launch"]
+_SUNSHINE_CMD_MARKERS = ["launch.py", "cli.py launch", "cli.exe launch", "sundeck.exe launch"]
 _CLI_EXE = Path(sys.executable) if getattr(sys, "frozen", False) else None
 _CLI_SCRIPT_DEFAULT = Path(__file__).parent / "cli.py"
 _KNOWN_STREAMING_SERVICES = ["SunshineService", "ApolloService"]

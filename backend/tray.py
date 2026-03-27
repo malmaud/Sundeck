@@ -1,4 +1,4 @@
-"""System tray icon for SteamLaunch."""
+"""System tray icon for SunDeck."""
 
 import threading
 import time
@@ -8,8 +8,8 @@ _TRAY_COLORS = {
     "syncing": ( 50, 160, 255),  # blue
 }
 _TRAY_TITLES = {
-    "idle":    "SteamLaunch",
-    "syncing": "SteamLaunch — Syncing…",
+    "idle":    "SunDeck",
+    "syncing": "SunDeck — Syncing…",
 }
 _TRAY_STATUS_TEXT = {
     "idle":    "Idle",
@@ -37,7 +37,7 @@ def _run_tray(port: int, get_sync_state, try_auto_sync) -> None:
         pystray.MenuItem(_status_text, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(
-            "Open SteamLaunch",
+            "Open SunDeck",
             lambda _icon, _item: webbrowser.open(f"http://localhost:{port}"),
             default=True,
         ),
@@ -48,7 +48,7 @@ def _run_tray(port: int, get_sync_state, try_auto_sync) -> None:
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Exit", lambda icon, _item: icon.stop()),
     )
-    icon = pystray.Icon("SteamLaunch", _create_tray_image(), "SteamLaunch", menu)
+    icon = pystray.Icon("SunDeck", _create_tray_image(), "SunDeck", menu)
 
     def _watch_state():
         last = None
@@ -56,7 +56,7 @@ def _run_tray(port: int, get_sync_state, try_auto_sync) -> None:
             state = get_sync_state()
             if state != last:
                 icon.icon = _create_tray_image(_TRAY_COLORS.get(state, _TRAY_COLORS["idle"]))
-                icon.title = _TRAY_TITLES.get(state, "SteamLaunch")
+                icon.title = _TRAY_TITLES.get(state, "SunDeck")
                 last = state
             time.sleep(0.5)
 

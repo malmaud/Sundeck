@@ -1,4 +1,4 @@
-# SteamLaunch
+# SunDeck
 
 A local web app that keeps an Apollo/Sunshine game streaming config in sync with your most recently played Steam games.
 

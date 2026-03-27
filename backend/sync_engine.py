@@ -17,7 +17,7 @@ from persistence import _load_settings, _load_config_path, _load_log, _save_log
 from steam import get_recent_games, get_thumbnail, get_vdf_path
 from sunshine import load_sunshine_config, build_sunshine_config
 
-_slog = logging.getLogger("steamlaunch.sync")
+_slog = logging.getLogger("sundeck.sync")
 
 # ── Apollo session detection via log file parsing ─────────────────────────────
 

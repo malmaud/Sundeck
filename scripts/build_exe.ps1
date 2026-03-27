@@ -1,4 +1,4 @@
-# Builds steamlaunch into a standalone Windows executable under dist/steamlaunch/.
+# Builds sundeck into a standalone Windows executable under dist/sundeck/.
 # Requirements (developer machine only): uv, node/npm
 $ErrorActionPreference = "Stop"
 
@@ -13,7 +13,7 @@ Pop-Location
 Write-Host "==> Bundling Python app with PyInstaller..."
 Push-Location "$ROOT\backend"
 uv run pyinstaller `
-  --name steamlaunch `
+  --name sundeck `
   --onedir `
   --clean `
   --noconfirm `
@@ -28,5 +28,5 @@ uv run pyinstaller `
 Pop-Location
 
 Write-Host ""
-Write-Host "Done. Distribute the folder: dist\steamlaunch\"
-Write-Host "Run: dist\steamlaunch\steamlaunch.exe"
+Write-Host "Done. Distribute the folder: dist\sundeck\"
+Write-Host "Run: dist\sundeck\sundeck.exe"

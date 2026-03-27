@@ -203,8 +203,8 @@ function App() {
       <header>
         <div className="header-row">
           <div className="header-title">
-            <img src="/images/logo.png" className="header-logo" alt="SteamLaunch" />
-            <h1>SteamLaunch</h1>
+            <img src="/images/logo.png" className="header-logo" alt="SunDeck" />
+            <h1>SunDeck</h1>
           </div>
           <div className="controls">
             <label>

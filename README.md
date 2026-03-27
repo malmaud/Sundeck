@@ -1,4 +1,4 @@
-# SteamLaunch
+# SunDeck
 
 A local web app that keeps an Apollo/Sunshine game streaming config in sync with your most recently played Steam games.
 
@@ -18,7 +18,7 @@ A local web app that keeps an Apollo/Sunshine game streaming config in sync with
 
 ## Usage
 
-Download the latest release and run `steamlaunch.exe`. The app will be available at `http://localhost:5000`.
+Download the latest release and run `sundeck.exe`. The app will be available at `http://localhost:5000`.
 
 ## Development
 

@@ -32,8 +32,8 @@ export function SetupModal({ defaultPath, suggestions, onSave }: SetupModalProps
   return (
     <div className="setup-overlay">
       <div className="setup-modal">
-        <h2>Welcome to SteamLaunch</h2>
-        <p>SteamLaunch syncs your Apollo / Sunshine game list with your most recently played Steam games.</p>
+        <h2>Welcome to SunDeck</h2>
+        <p>SunDeck syncs your Apollo / Sunshine game list with your most recently played Steam games.</p>
         <p>Confirm the path to your <code>apps.json</code> config file to get started.</p>
         <label>
           Config path

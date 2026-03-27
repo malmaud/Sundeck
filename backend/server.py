@@ -1,4 +1,4 @@
-"""Flask server for the SteamLaunch UI.
+"""Flask server for the SunDeck UI.
 
 Run with:  uv run server.py
 Then open:  http://localhost:5000

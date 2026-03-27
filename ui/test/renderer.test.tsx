@@ -382,12 +382,12 @@ describe("setup modal", () => {
       "GET /api/log": () => ({ body: [] }),
     });
     render(<App />);
-    await screen.findByText("Welcome to SteamLaunch");
+    await screen.findByText("Welcome to SunDeck");
   });
 
   test("does not show setup modal when needs_setup is false", async () => {
     await renderApp();
-    expect(screen.queryByText("Welcome to SteamLaunch")).toBeNull();
+    expect(screen.queryByText("Welcome to SunDeck")).toBeNull();
   });
 
   test("pre-fills config path input with default value", async () => {
@@ -398,7 +398,7 @@ describe("setup modal", () => {
       "GET /api/log": () => ({ body: [] }),
     });
     render(<App />);
-    await screen.findByText("Welcome to SteamLaunch");
+    await screen.findByText("Welcome to SunDeck");
     expect(screen.getByDisplayValue(DEFAULT_SETTINGS.config_path)).toBeInTheDocument();
   });
 
@@ -418,12 +418,12 @@ describe("setup modal", () => {
       "GET /api/log": () => ({ body: [] }),
     });
     render(<App />);
-    await screen.findByText("Welcome to SteamLaunch");
+    await screen.findByText("Welcome to SunDeck");
 
     fireEvent.click(screen.getByText("Save & Continue"));
 
     await waitFor(() => {
-      expect(screen.queryByText("Welcome to SteamLaunch")).toBeNull();
+      expect(screen.queryByText("Welcome to SunDeck")).toBeNull();
     });
   });
 
@@ -435,7 +435,7 @@ describe("setup modal", () => {
       "GET /api/log": () => ({ body: [] }),
     });
     render(<App />);
-    await screen.findByText("Welcome to SteamLaunch");
+    await screen.findByText("Welcome to SunDeck");
 
     fireEvent.click(screen.getByText("Save & Continue"));
 
