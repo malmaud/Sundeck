@@ -6,7 +6,7 @@ $ROOT = "$PSScriptRoot/.."
 
 Write-Host "==> Building UI bundle..."
 Push-Location "$ROOT\ui"
-npm ci
+npm install
 npm run build
 Pop-Location
 
@@ -20,6 +20,7 @@ uv run pyinstaller `
   --add-data "..\ui\index.html;ui" `
   --add-data "..\ui\styles.css;ui" `
   --add-data "..\ui\renderer.bundle.js;ui" `
+  --add-data "..\images;images" `
   --distpath "$ROOT\dist" `
   --workpath "$ROOT\build" `
   --specpath "$ROOT\build" `
