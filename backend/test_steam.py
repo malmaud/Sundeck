@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
@@ -45,7 +45,7 @@ def _run_get_recent_games(vdf_content, count=10, steam_api_names=None):
         (vdf_dir / "localconfig.vdf").write_text(vdf_content, encoding="utf-8")
         with patch.dict(os.environ, {"ProgramFiles(x86)": tmpdir}), \
              patch("steam.winreg.OpenKey", side_effect=OSError), \
-             patch("steam._get_thumbnail", return_value=""), \
+             patch("steam.get_thumbnail", return_value=""), \
              patch("steam._load_name_cache", return_value={}), \
              patch("steam._save_name_cache"), \
              patch("steam._fetch_name_from_steam", side_effect=fake_fetch_name):
@@ -82,44 +82,65 @@ class TestLaunchGame(unittest.TestCase):
 
 
 class TestWaitForGame(unittest.TestCase):
-    @patch("steam.time.sleep")
-    @patch("steam.get_running_app_id")
-    def test_waits_until_game_starts_then_exits(self, mock_id, _mock_sleep):
-        # Not running × 2 → running × 2 → exited
-        mock_id.side_effect = [0, 0, 100, 100, 0]
-        wait_for_game(100, launch_timeout=60, poll_interval=1.0)  # must not raise
+    def _patched(self, qvex_side_effect, mono_side_effect=None):
+        """Return a context manager that patches the three dependencies of wait_for_game."""
+        patches = [
+            patch("steam._open_steam_key", return_value=MagicMock()),
+            patch("steam.winreg.QueryValueEx", side_effect=qvex_side_effect),
+            patch("steam._wait_registry_change"),
+        ]
+        if mono_side_effect is not None:
+            patches.append(patch("steam.time.monotonic", side_effect=mono_side_effect))
+        return patches
 
-    @patch("steam.time.sleep")
-    @patch("steam.get_running_app_id")
-    def test_raises_timeout_when_game_never_starts(self, mock_id, _mock_sleep):
-        mock_id.return_value = 0
-        with self.assertRaises(TimeoutError) as ctx:
-            wait_for_game(100, launch_timeout=5, poll_interval=2.0)
+    def _run(self, patches, *args, **kwargs):
+        """Enter all patches and call wait_for_game with the given args."""
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in patches]
+            wait_for_game(*args, **kwargs)
+            return mocks
+
+    def test_waits_until_game_starts_then_exits(self):
+        # Phase 1: not running × 2 → running; Phase 2: running → exited
+        self._run(
+            self._patched([(0, 1), (0, 1), (100, 1), (100, 1), (0, 1)]),
+            100, launch_timeout=60, poll_interval=1.0,
+        )
+
+    def test_raises_timeout_when_game_never_starts(self):
+        # monotonic: start=0 → deadline=4; next check remaining=4-100=-96 → timeout
+        patches = self._patched([(0, 1)], mono_side_effect=[0.0, 100.0])
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            with self.assertRaises(TimeoutError) as ctx:
+                wait_for_game(100, launch_timeout=4, poll_interval=2.0)
         self.assertIn("100", str(ctx.exception))
 
-    @patch("steam.time.sleep")
-    @patch("steam.get_running_app_id")
-    def test_does_not_raise_when_game_starts_immediately(self, mock_id, _mock_sleep):
-        mock_id.side_effect = [100, 0]
-        wait_for_game(100, launch_timeout=1, poll_interval=1.0)  # must not raise
+    def test_does_not_raise_when_game_starts_immediately(self):
+        # Game already running on first check, exits on first exit-phase check
+        patches = self._patched([(100, 1), (0, 1)])
+        mocks = self._run(patches, 100, launch_timeout=1, poll_interval=1.0)
+        wait_mock = mocks[2]
+        wait_mock.assert_not_called()
 
-    @patch("steam.time.sleep")
-    @patch("steam.get_running_app_id")
-    def test_sleeps_at_given_poll_interval(self, mock_id, mock_sleep):
-        mock_id.side_effect = [0, 100, 100, 0]
-        wait_for_game(100, launch_timeout=60, poll_interval=2.5)
-        for c in mock_sleep.call_args_list:
-            self.assertEqual(c[0][0], 2.5)
+    def test_notified_while_waiting_for_start(self):
+        # Phase 1: not running → notified → running; Phase 2: running → notified → exited
+        patches = self._patched([(0, 1), (100, 1), (100, 1), (0, 1)])
+        mocks = self._run(patches, 100, launch_timeout=60, poll_interval=1.0)
+        self.assertEqual(mocks[2].call_count, 2)
 
-    @patch("steam.time.sleep")
-    @patch("steam.get_running_app_id")
-    def test_timeout_fires_after_expected_polls(self, mock_id, _mock_sleep):
-        # poll_interval=2, timeout=4: sleep-1 → elapsed=2 (ok), sleep-2 → elapsed=4 (timeout)
-        mock_id.return_value = 0
-        with self.assertRaises(TimeoutError):
-            wait_for_game(100, launch_timeout=4, poll_interval=2.0)
-        # while-check before sleep-1 + while-check before sleep-2 = 2 calls
-        self.assertEqual(mock_id.call_count, 2)
+    def test_timeout_based_on_wall_time(self):
+        # monotonic: start=0 → deadline=4; after first wait, remaining=4-100=-96 → timeout
+        patches = self._patched([(0, 1)], mono_side_effect=[0.0, 100.0])
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            with self.assertRaises(TimeoutError):
+                wait_for_game(100, launch_timeout=4, poll_interval=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +197,7 @@ class TestGetRecentGames(unittest.TestCase):
             (vdf_dir / "localconfig.vdf").write_text(VDF_CONTENT, encoding="utf-8")
             with patch.dict(os.environ, {"ProgramFiles(x86)": tmpdir}), \
                  patch("steam.winreg.OpenKey", side_effect=OSError), \
-                 patch("steam._get_thumbnail", return_value="/cache/440.png"), \
+                 patch("steam.get_thumbnail", return_value="/cache/440.png"), \
                  patch("steam._load_name_cache", return_value={}), \
                  patch("steam._save_name_cache"), \
                  patch("steam._fetch_name_from_steam", return_value="Team Fortress 2"):
@@ -274,7 +295,7 @@ class TestParserRegressions(unittest.TestCase):
 
 class TestThumbnailCmykRegression(unittest.TestCase):
     def test_cmyk_jpeg_is_saved_as_rgb_png(self):
-        """_get_thumbnail must not crash when the downloaded image is CMYK."""
+        """get_thumbnail must not crash when the downloaded image is CMYK."""
         import steam
 
         def fake_urlretrieve(url, filename):
@@ -285,7 +306,7 @@ class TestThumbnailCmykRegression(unittest.TestCase):
             cache_dir = Path(tmpdir) / "thumbnails"
             with patch.object(steam, "_THUMBNAIL_CACHE_DIR", cache_dir), \
                  patch("steam.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
-                result = steam._get_thumbnail(12345)
+                result = steam.get_thumbnail(12345)
                 self.assertTrue(result, "Expected a non-empty path back")
                 with Image.open(result) as saved:
                     self.assertIn(saved.mode, ("RGB", "RGBA"), "Saved PNG must not be CMYK")
@@ -302,7 +323,7 @@ class TestThumbnailCmykRegression(unittest.TestCase):
             cache_dir = Path(tmpdir) / "thumbnails"
             with patch.object(steam, "_THUMBNAIL_CACHE_DIR", cache_dir), \
                  patch("steam.urllib.request.urlretrieve", side_effect=fake_urlretrieve):
-                result = steam._get_thumbnail(99999)
+                result = steam.get_thumbnail(99999)
                 self.assertTrue(result)
                 with Image.open(result) as saved:
                     self.assertEqual(saved.mode, "RGB")

@@ -1,3 +1,5 @@
+import ctypes
+import ctypes.wintypes
 import json
 import logging
 import os
@@ -14,6 +16,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
+
+_ADVAPI32 = ctypes.windll.advapi32
+_KERNEL32 = ctypes.windll.kernel32
+_REG_NOTIFY_CHANGE_LAST_SET = 0x00000004
+_INFINITE = 0xFFFFFFFF
+_WAIT_FAILED = 0xFFFFFFFF
+_ERROR_SUCCESS = 0
+# WaitForSingleObject returns a DWORD; use unsigned so 0xFFFFFFFF == _WAIT_FAILED works.
+_KERNEL32.WaitForSingleObject.restype = ctypes.wintypes.DWORD
 
 from PIL import Image
 
@@ -223,6 +234,68 @@ def get_thumbnail(app_id: int) -> str:
     return str(path)
 
 
+def _open_steam_key() -> winreg.HKEYType:
+    """Open the Steam registry key for notification + query access.
+
+    Tries HKCU first (normal user context), then scans HKEY_USERS
+    (SYSTEM context, e.g. when launched from a Sunshine service).
+    """
+    access = winreg.KEY_NOTIFY | winreg.KEY_QUERY_VALUE
+    try:
+        return winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", access=access)
+    except OSError as e:
+        _log.debug("_open_steam_key: HKCU failed (%s), scanning HKEY_USERS", e)
+    with winreg.OpenKey(winreg.HKEY_USERS, "") as users_key:
+        i = 0
+        while True:
+            try:
+                sid = winreg.EnumKey(users_key, i)
+            except OSError:
+                break
+            i += 1
+            try:
+                return winreg.OpenKey(
+                    winreg.HKEY_USERS,
+                    rf"{sid}\Software\Valve\Steam",
+                    access=access,
+                )
+            except OSError:
+                pass
+    raise RuntimeError("Steam registry key not found in any user hive")
+
+
+def _wait_registry_change(key: winreg.HKEYType, timeout_ms: int) -> None:
+    """Block until a value in *key* changes, or *timeout_ms* milliseconds elapse."""
+    # CreateEventW(lpEventAttributes, bManualReset, bInitialState, lpName)
+    #   lpEventAttributes=None  no inherited security, default ACL
+    #   bManualReset=False      auto-reset: event clears itself after WaitForSingleObject returns
+    #   bInitialState=False     start non-signalled
+    #   lpName=None             unnamed event, no cross-process sharing needed
+    event = _KERNEL32.CreateEventW(None, False, False, None)
+    if not event:
+        raise ctypes.WinError()
+    try:
+        # RegNotifyChangeKeyValue(hKey, bWatchSubtree, dwNotifyFilter, hEvent, fAsynchronous)
+        #   bWatchSubtree=False             only watch this key, not its children
+        #   dwNotifyFilter=LAST_SET         fire when any value in the key is set/deleted
+        #   hEvent                          event to signal instead of blocking the thread
+        #   fAsynchronous=True              return immediately; signal the event later on change
+        ret = _ADVAPI32.RegNotifyChangeKeyValue(
+            int(key),
+            False,
+            _REG_NOTIFY_CHANGE_LAST_SET,
+            event,
+            True,
+        )
+        if ret != _ERROR_SUCCESS:
+            raise ctypes.WinError(ret)
+        result = _KERNEL32.WaitForSingleObject(event, timeout_ms)
+        if result == _WAIT_FAILED:
+            raise ctypes.WinError()
+    finally:
+        _KERNEL32.CloseHandle(event)
+
+
 def get_running_app_id() -> int:
     # Try the current user's hive first (works when running in user context).
     try:
@@ -258,21 +331,33 @@ def launch_game(app_id: int) -> None:
 
 def wait_for_game(app_id: int, launch_timeout: int, poll_interval: float) -> None:
     _log.info("wait_for_game: waiting for app_id=%s (timeout=%ss)", app_id, launch_timeout)
-    elapsed = 0
-    while True:
-        running = get_running_app_id()
-        if running == app_id:
-            break
-        elapsed += poll_interval
-        if elapsed >= launch_timeout:
-            raise TimeoutError(
-                f"Game {app_id} did not start within {launch_timeout} seconds"
-            )
-        _log.debug("wait_for_game: running=%s, elapsed=%.0fs", running, elapsed)
-        time.sleep(poll_interval)
+    key = _open_steam_key()
+    with key:
+        # Phase 1: wait for the game to appear, with a wall-clock timeout.
+        deadline = time.monotonic() + launch_timeout
+        while True:
+            try:
+                value, _ = winreg.QueryValueEx(key, "RunningAppID")
+            except OSError:
+                value = 0
+            if value == app_id:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Game {app_id} did not start within {launch_timeout} seconds")
+            _log.debug("wait_for_game: running=%s, remaining=%.0fs", value, remaining)
+            _wait_registry_change(key, max(1, int(remaining * 1000)))
 
-    _log.info("wait_for_game: game started, waiting for exit")
-    while get_running_app_id() == app_id:
-        time.sleep(poll_interval)
+        _log.info("wait_for_game: game started, waiting for exit")
+
+        # Phase 2: block until RunningAppID changes away from this game.
+        while True:
+            try:
+                value, _ = winreg.QueryValueEx(key, "RunningAppID")
+            except OSError:
+                value = 0
+            if value != app_id:
+                break
+            _wait_registry_change(key, _INFINITE)
 
     _log.info("wait_for_game: game exited")
