@@ -24,7 +24,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from pydantic import ValidationError
 
 from elevation import _write_elevated, _restart_elevated  # noqa: F401 (re-exported for tests)
-from models import Settings, SettingsPatch, SyncLogEntry  # noqa: F401 (re-exported for tests)
+from models import Settings, SettingsPatch, SyncLogEntry, SyncState  # noqa: F401 (re-exported for tests)
 from persistence import (
     _load_settings, _load_config_path, _patch_settings,
     _KNOWN_CONFIG_PATHS, _LOGS_DIR,
@@ -181,7 +181,7 @@ def api_get_config() -> Response:
 
 @app.route("/api/sync", methods=["POST"])
 def api_manual_sync() -> Response | tuple[Response, int]:
-    _set_sync_state("syncing")
+    _set_sync_state(SyncState.SYNCING)
     try:
         synced = _do_auto_sync()
         if synced:
@@ -193,7 +193,7 @@ def api_manual_sync() -> Response | tuple[Response, int]:
         _append_log("manual", False, str(exc).splitlines()[0], detail=traceback.format_exc())
         return jsonify({"error": str(exc).splitlines()[0]}), 500
     finally:
-        _set_sync_state("idle")
+        _set_sync_state(SyncState.IDLE)
 
 
 @app.route("/api/sync-status")
@@ -298,7 +298,7 @@ def _main(_argv):
         flask_thread.start()
         _start_watchers()
         webbrowser.open(f"http://localhost:{port}")
-        _run_tray(port, _get_sync_state, _try_auto_sync)
+        _run_tray(port)
         os._exit(0)
 
 

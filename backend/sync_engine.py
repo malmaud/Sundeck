@@ -6,13 +6,14 @@ import queue
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from elevation import _write_elevated, _restart_elevated
-from models import SyncLogEntry, _LOG_MAX
+from models import SyncLogEntry, SyncState, _LOG_MAX
 from persistence import _load_settings, _load_config_path, _load_log, _save_log
 from steam import get_recent_games, get_thumbnail, get_vdf_path
 from sunshine import load_sunshine_config, build_sunshine_config
@@ -95,8 +96,13 @@ def _sse_push_sync_status() -> None:
 
 _DEBOUNCE_SECONDS = 5.0
 
-_sync_state = "idle"
+_sync_state = SyncState.IDLE
 _sync_state_lock = threading.Lock()
+_sync_state_callbacks: set[Callable[[SyncState], None]] = set()
+
+
+def register_sync_state_callback(cb: Callable[[SyncState], None]) -> None:
+    _sync_state_callbacks.add(cb)
 
 _games_version = 0
 _games_version_lock = threading.Lock()
@@ -114,14 +120,16 @@ def _get_games_version() -> int:
         return _games_version
 
 
-def _set_sync_state(state: str) -> None:
+def _set_sync_state(state: SyncState) -> None:
     global _sync_state
     with _sync_state_lock:
         _sync_state = state
     _sse_push_sync_status()
+    for cb in _sync_state_callbacks:
+        cb(state)
 
 
-def _get_sync_state() -> str:
+def _get_sync_state() -> SyncState:
     with _sync_state_lock:
         return _sync_state
 
@@ -175,7 +183,7 @@ def _do_auto_sync() -> bool:
     config = build_sunshine_config(existing, synced_games)
     if config.model_dump() == existing.model_dump():
         return False
-    _set_sync_state("syncing")
+    _set_sync_state(SyncState.SYNCING)
     _bump_games_version()
     _write_elevated(config_path, config.model_dump_json(by_alias=True, indent=4))
     _restart_elevated()
@@ -187,16 +195,16 @@ def _try_auto_sync() -> None:
     try:
         settings = _load_settings()
         if not settings.auto_sync:
-            _set_sync_state("idle")
+            _set_sync_state(SyncState.IDLE)
             return
         if settings.config_path is None:
-            _set_sync_state("idle")
+            _set_sync_state(SyncState.IDLE)
             return
         if _is_streaming_active():
             _schedule_sync(_DEBOUNCE_SECONDS)
             return
     except Exception:
-        _set_sync_state("idle")
+        _set_sync_state(SyncState.IDLE)
         return
     try:
         synced = _do_auto_sync()
@@ -205,7 +213,7 @@ def _try_auto_sync() -> None:
     except Exception as exc:
         _append_log("auto", False, str(exc).splitlines()[0] or "Auto-sync failed", detail=traceback.format_exc())
     finally:
-        _set_sync_state("idle")
+        _set_sync_state(SyncState.IDLE)
 
 
 _sync_timer: threading.Timer | None = None
@@ -215,7 +223,7 @@ _sync_timer_lock = threading.Lock()
 def _schedule_sync(delay: float = _DEBOUNCE_SECONDS) -> None:
     """Schedule a debounced auto-sync attempt *delay* seconds from now."""
     global _sync_timer
-    _set_sync_state("pending")
+    _set_sync_state(SyncState.PENDING)
     with _sync_timer_lock:
         if _sync_timer is not None:
             _sync_timer.cancel()

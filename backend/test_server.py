@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import server
 import sync_engine
+from models import SyncState
 from server import Settings, _do_auto_sync, _is_streaming_active, _try_auto_sync, _SyncEventHandler, _schedule_sync, _set_sync_state, _get_sync_state
 from steam import SteamGame
 
@@ -215,7 +216,7 @@ class TestTryAutoSync(unittest.TestCase):
         self.assertFalse(synced)
 
     def test_resets_to_idle_when_config_path_not_set(self):
-        _set_sync_state("pending")
+        _set_sync_state(SyncState.PENDING)
         synced, _, _ = self._run(auto_sync=True, config_path=None)
         self.assertFalse(synced)
         self.assertEqual(_get_sync_state(), "idle")
@@ -228,7 +229,7 @@ class TestTryAutoSync(unittest.TestCase):
 
 class TestSyncState(unittest.TestCase):
     def setUp(self):
-        _set_sync_state("idle")
+        _set_sync_state(SyncState.IDLE)
         with sync_engine._sync_timer_lock:
             if sync_engine._sync_timer is not None:
                 sync_engine._sync_timer.cancel()
@@ -258,14 +259,14 @@ class TestSyncState(unittest.TestCase):
         self.assertEqual(_get_sync_state(), "idle")
 
     def test_try_auto_sync_resets_to_idle_when_disabled(self):
-        _set_sync_state("pending")
+        _set_sync_state(SyncState.PENDING)
         with patch("sync_engine._load_settings", return_value=Settings(auto_sync=False)):
             _try_auto_sync()
 
         self.assertEqual(_get_sync_state(), "idle")
 
     def test_try_auto_sync_stays_pending_when_streaming(self):
-        _set_sync_state("pending")
+        _set_sync_state(SyncState.PENDING)
         with patch("sync_engine._load_settings", return_value=Settings(auto_sync=True, config_path=r"C:\fake")), \
              patch("sync_engine._is_streaming_active", return_value=True), \
              patch("sync_engine._schedule_sync"):
@@ -274,20 +275,20 @@ class TestSyncState(unittest.TestCase):
         self.assertEqual(_get_sync_state(), "pending")
 
     def test_api_sync_status_returns_idle(self):
-        _set_sync_state("idle")
+        _set_sync_state(SyncState.IDLE)
         with server.app.test_client() as client:
             resp = client.get("/api/sync-status")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json()["state"], "idle")
 
     def test_api_sync_status_returns_pending(self):
-        _set_sync_state("pending")
+        _set_sync_state(SyncState.PENDING)
         with server.app.test_client() as client:
             resp = client.get("/api/sync-status")
         self.assertEqual(resp.get_json()["state"], "pending")
 
     def test_api_sync_status_returns_syncing(self):
-        _set_sync_state("syncing")
+        _set_sync_state(SyncState.SYNCING)
         with server.app.test_client() as client:
             resp = client.get("/api/sync-status")
         self.assertEqual(resp.get_json()["state"], "syncing")
@@ -620,7 +621,7 @@ class TestSseStateChangeSideEffects(unittest.TestCase):
     def setUp(self):
         with sync_engine._sse_lock:
             sync_engine._sse_subscribers.clear()
-        _set_sync_state("idle")
+        _set_sync_state(SyncState.IDLE)
 
     def tearDown(self):
         with sync_engine._sse_lock:
@@ -634,7 +635,7 @@ class TestSseStateChangeSideEffects(unittest.TestCase):
 
     def test_set_sync_state_pushes_sync_status_event(self):
         q = self._subscribe()
-        _set_sync_state("syncing")
+        _set_sync_state(SyncState.SYNCING)
         msg = q.get_nowait()
         self.assertIn("event: sync_status", msg)
         data = json.loads(msg.split("data: ")[1].strip())
@@ -665,7 +666,7 @@ class TestApiEventsRoute(unittest.TestCase):
     def setUp(self):
         with sync_engine._sse_lock:
             sync_engine._sse_subscribers.clear()
-        _set_sync_state("idle")
+        _set_sync_state(SyncState.IDLE)
 
     def tearDown(self):
         with sync_engine._sse_lock:
@@ -692,7 +693,7 @@ class TestApiEventsRoute(unittest.TestCase):
         self.assertIn("event: sync_status", first)
 
     def test_initial_chunk_contains_state_and_version(self):
-        _set_sync_state("pending")
+        _set_sync_state(SyncState.PENDING)
         gen, first, _ = self._open_stream()
         gen.close()
         data = json.loads(first.split("data: ")[1].strip())

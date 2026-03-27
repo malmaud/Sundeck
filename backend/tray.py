@@ -1,38 +1,42 @@
 """System tray icon for SunDeck."""
 
-import threading
-import time
+import sys
+import webbrowser
+from pathlib import Path
+from typing import Any
 
-_TRAY_COLORS = {
-    "idle":    (100, 210, 100),  # green
-    "syncing": ( 50, 160, 255),  # blue
-}
+from PIL import Image
+import pystray
+
+from models import SyncState
+from sync_engine import _get_sync_state, register_sync_state_callback
+
+if getattr(sys, "frozen", False):
+    _IMAGES_DIR = Path(sys._MEIPASS) / "images"  # type: ignore[attr-defined]
+else:
+    _IMAGES_DIR = Path(__file__).parent.parent / "images"
+
 _TRAY_TITLES = {
-    "idle":    "SunDeck",
-    "syncing": "SunDeck — Syncing…",
+    SyncState.IDLE:    "SunDeck",
+    SyncState.PENDING: "SunDeck — Sync pending…",
+    SyncState.SYNCING: "SunDeck — Syncing…",
 }
 _TRAY_STATUS_TEXT = {
-    "idle":    "Idle",
-    "syncing": "Syncing…",
+    SyncState.IDLE:    "Idle",
+    SyncState.PENDING: "Sync pending…",
+    SyncState.SYNCING: "Syncing…",
 }
 
 
-def _create_tray_image(color: tuple = (100, 210, 100)):
-    from PIL import Image, ImageDraw
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([2, 2, 62, 62], fill=(30, 35, 50, 255))
-    draw.polygon([(20, 16), (20, 48), (50, 32)], fill=(*color, 255))
-    return img
+def _load_tray_image() -> Image.Image:
+    return Image.open(_IMAGES_DIR / "favicon.png").convert("RGBA")
 
 
-def _run_tray(port: int, get_sync_state, try_auto_sync) -> None:
-    import pystray
-    import webbrowser
+def _status_text(_item: Any) -> str:
+    return _TRAY_STATUS_TEXT.get(_get_sync_state(), _TRAY_STATUS_TEXT[SyncState.IDLE])
 
-    def _status_text(_item):
-        return _TRAY_STATUS_TEXT.get(get_sync_state(), "…")
 
+def _run_tray(port: int) -> None:
     menu = pystray.Menu(
         pystray.MenuItem(_status_text, None, enabled=False),
         pystray.Menu.SEPARATOR,
@@ -41,30 +45,9 @@ def _run_tray(port: int, get_sync_state, try_auto_sync) -> None:
             lambda _icon, _item: webbrowser.open(f"http://localhost:{port}"),
             default=True,
         ),
-        pystray.MenuItem(
-            "Sync Now",
-            lambda _icon, _item: threading.Thread(target=try_auto_sync, daemon=True).start(),
-        ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Exit", lambda icon, _item: icon.stop()),
     )
-    icon = pystray.Icon("SunDeck", _create_tray_image(), "SunDeck", menu)
-
-    def _watch_state():
-        last = None
-        while True:
-            state = get_sync_state()
-            if state != last:
-                icon.icon = _create_tray_image(_TRAY_COLORS.get(state, _TRAY_COLORS["idle"]))
-                icon.title = _TRAY_TITLES.get(state, "SunDeck")
-                last = state
-            time.sleep(0.5)
-
-    threading.Thread(target=_watch_state, daemon=True).start()
-    threading.Thread(target=icon.run, daemon=True).start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        icon.stop()
+    icon = pystray.Icon("SunDeck", _load_tray_image(), "SunDeck", menu)
+    register_sync_state_callback(lambda state: setattr(icon, "title", _TRAY_TITLES.get(state, _TRAY_TITLES[SyncState.IDLE])))
+    icon.run()  # blocks until icon.stop() is called (e.g. from the Exit menu item)

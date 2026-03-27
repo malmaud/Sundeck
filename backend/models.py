@@ -1,4 +1,12 @@
+from enum import Enum
+
 from pydantic import BaseModel, Field, TypeAdapter, field_validator
+
+
+class SyncState(str, Enum):
+    IDLE = "idle"
+    PENDING = "pending"
+    SYNCING = "syncing"
 
 
 class Settings(BaseModel):
