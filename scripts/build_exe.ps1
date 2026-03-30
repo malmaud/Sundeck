@@ -1,4 +1,4 @@
-# Builds sundeck into a standalone Windows executable under dist/sundeck/.
+# Builds sundeck into a standalone single-file Windows executable under dist/.
 # Requirements (developer machine only): uv, node/npm
 $ErrorActionPreference = "Stop"
 
@@ -14,7 +14,7 @@ Write-Host "==> Bundling Python app with PyInstaller..."
 Push-Location "$ROOT\backend"
 uv run python -m PyInstaller `
   --name sundeck `
-  --onedir `
+  --onefile `
   --clean `
   --noconfirm `
   --add-data "..\ui\index.html;ui" `
@@ -28,5 +28,4 @@ uv run python -m PyInstaller `
 Pop-Location
 
 Write-Host ""
-Write-Host "Done. Distribute the folder: dist\sundeck\"
-Write-Host "Run: dist\sundeck\sundeck.exe"
+Write-Host "Done. Distribute the file: dist\sundeck.exe"
