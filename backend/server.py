@@ -10,9 +10,7 @@ import logging
 import logging.handlers
 import os
 import queue
-import re
 import socket
-import subprocess
 import sys
 import threading
 import traceback
@@ -31,16 +29,7 @@ from persistence import (
 )
 from steam import get_recent_games, get_thumbnail
 from sunshine import get_managed_apps, has_desktop_app
-from sync_engine import (
-    do_auto_sync, is_streaming_active, try_auto_sync,  # noqa: F401 (re-exported for tests)
-    SyncEventHandler, schedule_sync, set_sync_state, get_sync_state,  # noqa: F401
-    get_games_version, bump_games_version,  # noqa: F401
-    sync_log, sync_log_lock,
-    sse_subscribers, sse_lock, sse_push, sse_push_sync_status,  # noqa: F401
-    sync_debouncer,  # noqa: F401 (re-exported for tests)
-    append_log, _save_log,  # noqa: F401 (re-exported for tests)
-    start_watchers,
-)
+import sync_engine
 from startup import get_run_at_startup, set_run_at_startup
 from tray import _run_tray
 
@@ -172,7 +161,7 @@ def api_update_settings() -> Response | tuple[Response, int]:
     if "run_at_startup" in updates:
         set_run_at_startup(updates["run_at_startup"])
     if {"excluded_games", "included_games", "count", "auto_sync", "config_path", "desktop_position"} & updates.keys():
-        schedule_sync()
+        sync_engine.schedule_sync()
     return jsonify({"status": "ok"})
 
 
@@ -186,48 +175,55 @@ def api_get_config() -> Response:
 
 @app.route("/api/sync", methods=["POST"])
 def api_manual_sync() -> Response | tuple[Response, int]:
-    set_sync_state(SyncState.SYNCING)
+    sync_engine.set_sync_state(SyncState.SYNCING)
     try:
-        synced = do_auto_sync()
+        synced = sync_engine.do_auto_sync()
         if synced:
-            append_log("manual", True, "Synced games")
+            sync_engine.append_log("manual", True, "Synced games")
         else:
-            append_log("manual", True, "No changes, sync skipped")
+            sync_engine.append_log("manual", True, "No changes, sync skipped")
         return jsonify({"status": "ok"})
     except Exception as exc:
-        append_log("manual", False, str(exc).splitlines()[0], detail=traceback.format_exc())
+        sync_engine.append_log("manual", False, str(exc).splitlines()[0], detail=traceback.format_exc())
         return jsonify({"error": str(exc).splitlines()[0]}), 500
     finally:
-        set_sync_state(SyncState.IDLE)
+        sync_engine.set_sync_state(SyncState.IDLE)
 
 
 @app.route("/api/sync-status")
 def api_sync_status() -> Response:
-    return jsonify({"state": get_sync_state(), "games_version": get_games_version()})
+    return jsonify({"state": sync_engine.get_sync_state(), "games_version": sync_engine.get_games_version()})
+
+
+@app.route("/api/shutdown", methods=["POST"])
+def api_shutdown() -> Response:
+    resp = jsonify({"status": "ok"})
+    resp.call_on_close(lambda: os._exit(0))
+    return resp
 
 
 @app.route("/api/log")
 def api_get_log() -> Response:
-    with sync_log_lock:
-        return jsonify([e.model_dump() for e in sorted(sync_log, key=lambda e: e.timestamp, reverse=True)])
+    with sync_engine.sync_log_lock:
+        return jsonify([e.model_dump() for e in sorted(sync_engine.sync_log, key=lambda e: e.timestamp, reverse=True)])
 
 
 @app.route("/api/events")
 def api_events() -> Response:
     def stream():
         q: queue.SimpleQueue = queue.SimpleQueue()
-        with sse_lock:
-            sse_subscribers.add(q)
+        with sync_engine.sse_lock:
+            sync_engine.sse_subscribers.add(q)
         try:
-            yield f"event: sync_status\ndata: {json.dumps({'state': get_sync_state(), 'games_version': get_games_version()})}\n\n"
+            yield f"event: sync_status\ndata: {json.dumps({'state': sync_engine.get_sync_state(), 'games_version': sync_engine.get_games_version()})}\n\n"
             while True:
                 try:
                     yield q.get(timeout=30)
                 except queue.Empty:
                     yield ": keepalive\n\n"
         finally:
-            with sse_lock:
-                sse_subscribers.discard(q)
+            with sync_engine.sse_lock:
+                sync_engine.sse_subscribers.discard(q)
 
     return Response(
         stream(),
@@ -236,64 +232,58 @@ def api_events() -> Response:
     )
 
 
-def _check_port(port: int) -> None:
-    """Exit with a helpful error if another process is already using *port*."""
+def _resolve_port(preferred: int) -> int:
+    """Return *preferred* if it's free.
+
+    If *preferred* is taken by an existing SunDeck instance, open the browser
+    to it and exit. Otherwise fall back to an OS-assigned free port.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        sock.bind(("127.0.0.1", port))
+        sock.bind(("127.0.0.1", preferred))
         sock.close()
-        return
+        return preferred
     except OSError:
         pass
 
-    owner = "(unknown process)"
+    # Port is taken — check if it's already our app.
+    import time
+    import requests
     try:
-        out = subprocess.check_output(
-            ["netstat", "-ano"],
-            text=True,
-            creationflags=0x08000000,  # CREATE_NO_WINDOW
-        )
-        pattern = re.compile(rf":{port}\b")
-        for line in out.splitlines():
-            if pattern.search(line) and "LISTENING" in line:
-                pid = line.strip().rsplit(None, 1)[-1]
+        resp = requests.get(f"http://127.0.0.1:{preferred}/api/sync-status", timeout=1)
+        if resp.status_code == 200:
+            requests.post(f"http://127.0.0.1:{preferred}/api/shutdown", timeout=1)
+            # Wait up to 5s for the port to free.
+            for _ in range(50):
+                time.sleep(0.1)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 try:
-                    tl = subprocess.check_output(
-                        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                        text=True,
-                        creationflags=0x08000000,
-                    )
-                    name = tl.strip().split(",")[0].strip('"')
-                    owner = f"{name} (PID {pid})"
-                except Exception:
-                    owner = f"PID {pid}"
-                break
+                    sock.bind(("127.0.0.1", preferred))
+                    sock.close()
+                    return preferred
+                except OSError:
+                    pass
     except Exception:
         pass
 
-    pid_match = re.search(r"PID (\d+)", owner)
-    kill_hint = (
-        f"  Kill it with:  taskkill /PID {pid_match.group(1)} /F" if pid_match else ""
-    )
-    print(
-        f"ERROR: Port {port} is already in use by {owner}.{chr(10) + kill_hint if kill_hint else ''}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    # Taken by something else — fall back to any free port.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
 
 
 def _main(_argv):
     del _argv
-    port = flags.FLAGS.port
+    port = _resolve_port(flags.FLAGS.port)
     if flags.FLAGS.dev:
         if not os.environ.get("WERKZEUG_RUN_MAIN"):
-            _check_port(port)
             webbrowser.open(f"http://localhost:{port}")
         else:
-            start_watchers()
+            sync_engine.start_watchers()
         app.run(port=port, debug=True, threaded=True)
     else:
-        _check_port(port)
         # Re-apply startup registration in case the exe path changed (e.g. after an update).
         set_run_at_startup(_load_settings().run_at_startup)
         flask_thread = threading.Thread(
@@ -301,7 +291,7 @@ def _main(_argv):
             daemon=True,
         )
         flask_thread.start()
-        start_watchers()
+        sync_engine.start_watchers()
         webbrowser.open(f"http://localhost:{port}")
         _run_tray(port)
         os._exit(0)

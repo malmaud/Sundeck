@@ -35,6 +35,7 @@ function App() {
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [hasLogError, setHasLogError] = useState(false);
   const [errorBannerMsg, setErrorBannerMsg] = useState<string | null>(null);
+  const [shutdownState, setShutdownState] = useState<"off" | "stopping" | "stopped">("off");
   const [syncState, setSyncState] = useState<string>("idle");
   const prevSyncState = useRef("idle");
   const prevGamesVersion = useRef<number | null>(null);
@@ -201,6 +202,10 @@ function App() {
     }
   }
 
+  if (shutdownState !== "off") {
+    return <div className="shutting-down">{shutdownState === "stopping" ? "Shutting down…" : "SunDeck has shut down."}</div>;
+  }
+
   return (
     <>
       <header>
@@ -241,6 +246,16 @@ function App() {
             <button className="btn-secondary activity-btn" onClick={() => setLogOpen((o) => !o)}>
               Activity{hasLogError && <span className="log-error-badge" />}
             </button>
+            <button className="btn-secondary" onClick={async () => {
+              if (!confirm('Shut down SunDeck?')) return;
+              setShutdownState("stopping");
+              fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
+              while (true) {
+                await new Promise(r => setTimeout(r, 500));
+                try { await fetch('/api/sync-status'); } catch { break; }
+              }
+              setShutdownState("stopped");
+            }}>Shut down</button>
           </div>
         </div>
         {settingsOpen && (

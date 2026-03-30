@@ -4,6 +4,15 @@
   box-sizing: border-box;
 }
 
+.shutting-down {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  color: #888;
+  font-size: 1.1rem;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: #1a1a2e;
