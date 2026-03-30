@@ -25,7 +25,7 @@ Download the latest release and run `sundeck.exe`. Your browser will automatical
 ### Running from source
 
 ```powershell
-./scripts/dev_server.ps1
+.\scripts\dev_server.ps1
 ```
 
 The app will be available at `http://localhost:5000`.
@@ -35,7 +35,7 @@ This will automatically reload the server whenever the server or UI source code 
 ### Building the executable
 
 ```powershell
-./scripts/build_exe.ps1
+.\scripts\build_exe.ps1
 ```
 
 ## How it works
