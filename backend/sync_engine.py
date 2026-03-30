@@ -18,17 +18,17 @@ from persistence import _load_settings, _load_config_path, _load_log, _save_log
 from steam import get_recent_games, get_thumbnail, get_vdf_path
 from sunshine import load_sunshine_config, build_sunshine_config
 
-_slog = logging.getLogger("sundeck.sync")
+slog = logging.getLogger("sundeck.sync")
 
 # ── Apollo session detection via log file parsing ─────────────────────────────
 
-_APP_RUNNING_PATTERNS = [
+APP_RUNNING_PATTERNS = [
     "Launching app",
     "Session pausing for app",
     "Session resuming for app",
     "Treating the app as a detached command",
 ]
-_APP_STOPPED_PATTERNS = [
+APP_STOPPED_PATTERNS = [
     "Process terminated",
     "All app processes have successfully exited",
     "Forcefully terminating the app",
@@ -39,7 +39,7 @@ _APP_STOPPED_PATTERNS = [
 ]
 
 
-def _is_streaming_active() -> bool:
+def is_streaming_active() -> bool:
     """Return True if Apollo has a running app (even without an active client connection)."""
     log_dir = _load_config_path().parent
     log_files = [log_dir / "sunshine.log", log_dir / "sunshine.log.backup"]
@@ -50,107 +50,107 @@ def _is_streaming_active() -> bool:
         try:
             lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as e:
-            _slog.warning("_is_streaming_active: failed to read %s: %s", log_file, e)
+            slog.warning("is_streaming_active: failed to read %s: %s", log_file, e)
             continue
 
         for line in reversed(lines):
-            for pattern in _APP_RUNNING_PATTERNS:
+            for pattern in APP_RUNNING_PATTERNS:
                 if pattern in line:
-                    _slog.debug("_is_streaming_active: app running (matched %r in %s)", pattern, log_file.name)
+                    slog.debug("is_streaming_active: app running (matched %r in %s)", pattern, log_file.name)
                     return True
-            for pattern in _APP_STOPPED_PATTERNS:
+            for pattern in APP_STOPPED_PATTERNS:
                 if pattern in line:
-                    _slog.debug("_is_streaming_active: app stopped (matched %r in %s)", pattern, log_file.name)
+                    slog.debug("is_streaming_active: app stopped (matched %r in %s)", pattern, log_file.name)
                     return False
 
-    _slog.debug("_is_streaming_active: no session events found in logs, assuming inactive")
+    slog.debug("is_streaming_active: no session events found in logs, assuming inactive")
     return False
 
 
 # ── Server-Sent Events ────────────────────────────────────────────────────────
 
-_sse_subscribers: set[queue.SimpleQueue] = set()
-_sse_lock = threading.Lock()
+sse_subscribers: set[queue.SimpleQueue] = set()
+sse_lock = threading.Lock()
 
 
-def _sse_push(event: str, data: str) -> None:
+def sse_push(event: str, data: str) -> None:
     msg = f"event: {event}\ndata: {data}\n\n"
-    with _sse_lock:
+    with sse_lock:
         dead = set()
-        for q in _sse_subscribers:
+        for q in sse_subscribers:
             try:
                 q.put_nowait(msg)
             except Exception:
                 dead.add(q)
-        _sse_subscribers.difference_update(dead)
+        sse_subscribers.difference_update(dead)
 
 
-def _sse_push_sync_status() -> None:
-    _sse_push("sync_status", json.dumps({
-        "state": _get_sync_state(),
-        "games_version": _get_games_version(),
+def sse_push_sync_status() -> None:
+    sse_push("sync_status", json.dumps({
+        "state": get_sync_state(),
+        "games_version": get_games_version(),
     }))
 
 
 # ── Sync state ────────────────────────────────────────────────────────────────
 
-_DEBOUNCE_SECONDS = 5.0
+DEBOUNCE_SECONDS = 5.0
 
-_sync_state = SyncState.IDLE
-_sync_state_lock = threading.Lock()
-_sync_state_callbacks: set[Callable[[SyncState], None]] = set()
+sync_state = SyncState.IDLE
+sync_state_lock = threading.Lock()
+sync_state_callbacks: set[Callable[[SyncState], None]] = set()
 
 
 def register_sync_state_callback(cb: Callable[[SyncState], None]) -> None:
-    _sync_state_callbacks.add(cb)
+    sync_state_callbacks.add(cb)
 
-_games_version = 0
-_games_version_lock = threading.Lock()
-
-
-def _bump_games_version() -> None:
-    global _games_version
-    with _games_version_lock:
-        _games_version += 1
-    _sse_push_sync_status()
+games_version = 0
+games_version_lock = threading.Lock()
 
 
-def _get_games_version() -> int:
-    with _games_version_lock:
-        return _games_version
+def bump_games_version() -> None:
+    global games_version
+    with games_version_lock:
+        games_version += 1
+    sse_push_sync_status()
 
 
-def _set_sync_state(state: SyncState) -> None:
-    global _sync_state
-    with _sync_state_lock:
-        _sync_state = state
-    _sse_push_sync_status()
-    for cb in _sync_state_callbacks:
+def get_games_version() -> int:
+    with games_version_lock:
+        return games_version
+
+
+def set_sync_state(state: SyncState) -> None:
+    global sync_state
+    with sync_state_lock:
+        sync_state = state
+    sse_push_sync_status()
+    for cb in sync_state_callbacks:
         cb(state)
 
 
-def _get_sync_state() -> SyncState:
-    with _sync_state_lock:
-        return _sync_state
+def get_sync_state() -> SyncState:
+    with sync_state_lock:
+        return sync_state
 
 
 # ── Activity log ──────────────────────────────────────────────────────────────
 
-_sync_log: list[SyncLogEntry] = _load_log()
-_sync_log_lock = threading.Lock()
+sync_log: list[SyncLogEntry] = _load_log()
+sync_log_lock = threading.Lock()
 
 
-def _append_log(kind: str, success: bool, message: str, detail: str = "") -> None:
-    with _sync_log_lock:
-        _sync_log.append(SyncLogEntry(timestamp=time.time(), kind=kind, success=success, message=message, detail=detail))
-        del _sync_log[:-_LOG_MAX]
-        _save_log(_sync_log)
-    _sse_push("log_updated", "{}")
+def append_log(kind: str, success: bool, message: str, detail: str = "") -> None:
+    with sync_log_lock:
+        sync_log.append(SyncLogEntry(timestamp=time.time(), kind=kind, success=success, message=message, detail=detail))
+        del sync_log[:-_LOG_MAX]
+        _save_log(sync_log)
+    sse_push("log_updated", "{}")
 
 
 # ── Sync logic ────────────────────────────────────────────────────────────────
 
-def _do_auto_sync() -> bool:
+def do_auto_sync() -> bool:
     """Run an auto-sync. Return True if config was written + service restarted."""
     settings = _load_settings()
     excluded = set(settings.excluded_games)
@@ -183,56 +183,66 @@ def _do_auto_sync() -> bool:
     config = build_sunshine_config(existing, synced_games, desktop_position=settings.desktop_position)
     if config.model_dump() == existing.model_dump():
         return False
-    _set_sync_state(SyncState.SYNCING)
-    _bump_games_version()
+    set_sync_state(SyncState.SYNCING)
+    bump_games_version()
     _write_elevated(config_path, config.model_dump_json(by_alias=True, indent=4))
     _restart_elevated()
     return True
 
 
-def _try_auto_sync() -> None:
+def try_auto_sync() -> None:
     """Attempt an auto-sync if enabled; defer while streaming."""
     try:
         settings = _load_settings()
         if not settings.auto_sync:
-            _set_sync_state(SyncState.IDLE)
+            set_sync_state(SyncState.IDLE)
             return
         if settings.config_path is None:
-            _set_sync_state(SyncState.IDLE)
+            set_sync_state(SyncState.IDLE)
             return
-        if _is_streaming_active():
-            _schedule_sync(_DEBOUNCE_SECONDS)
+        if is_streaming_active():
+            schedule_sync()
             return
     except Exception:
-        _set_sync_state(SyncState.IDLE)
+        set_sync_state(SyncState.IDLE)
         return
     try:
-        synced = _do_auto_sync()
+        synced = do_auto_sync()
         if synced:
-            _append_log("auto", True, "Synced games")
+            append_log("auto", True, "Synced games")
     except Exception as exc:
-        _append_log("auto", False, str(exc).splitlines()[0] or "Auto-sync failed", detail=traceback.format_exc())
+        append_log("auto", False, str(exc).splitlines()[0] or "Auto-sync failed", detail=traceback.format_exc())
     finally:
-        _set_sync_state(SyncState.IDLE)
+        set_sync_state(SyncState.IDLE)
 
 
-_sync_timer: threading.Timer | None = None
-_sync_timer_lock = threading.Lock()
+class Debouncer:
+    """Cancels any pending timer and schedules *fn* to run after *delay* seconds."""
+
+    def __init__(self) -> None:
+        self._timer: threading.Timer | None = None
+        self._lock = threading.Lock()
+
+    def schedule(self, fn: Callable[[], None], delay: float) -> None:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            t = threading.Timer(delay, fn)
+            t.daemon = True
+            t.start()
+            self._timer = t
 
 
-def _schedule_sync(delay: float = _DEBOUNCE_SECONDS) -> None:
-    """Schedule a debounced auto-sync attempt *delay* seconds from now."""
-    global _sync_timer
-    _set_sync_state(SyncState.PENDING)
-    with _sync_timer_lock:
-        if _sync_timer is not None:
-            _sync_timer.cancel()
-        _sync_timer = threading.Timer(delay, _try_auto_sync)
-        _sync_timer.daemon = True
-        _sync_timer.start()
+sync_debouncer = Debouncer()
 
 
-class _SyncEventHandler(FileSystemEventHandler):
+def schedule_sync() -> None:
+    """Schedule a debounced auto-sync attempt."""
+    set_sync_state(SyncState.PENDING)
+    sync_debouncer.schedule(try_auto_sync, DEBOUNCE_SECONDS)
+
+
+class SyncEventHandler(FileSystemEventHandler):
     """Triggers a debounced auto-sync when watched files change."""
 
     def __init__(self, filenames: set[str]) -> None:
@@ -242,10 +252,10 @@ class _SyncEventHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         if Path(str(event.src_path)).name.lower() in self._filenames:
-            _schedule_sync()
+            schedule_sync()
 
 
-def _start_watchers() -> None:
+def start_watchers() -> None:
     """Start a watchdog observer for Steam's localconfig.vdf."""
     vdf = get_vdf_path()
     if vdf is None:
@@ -253,10 +263,11 @@ def _start_watchers() -> None:
 
     observer = Observer()
     observer.schedule(
-        _SyncEventHandler({vdf.name}),
+        SyncEventHandler({vdf.name}),
         str(vdf.parent),
         recursive=False,
     )
     observer.daemon = True
     observer.start()
-    _schedule_sync(delay=0)
+    set_sync_state(SyncState.PENDING)
+    sync_debouncer.schedule(try_auto_sync, 0)

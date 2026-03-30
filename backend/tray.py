@@ -9,7 +9,7 @@ from PIL import Image
 import pystray
 
 from models import SyncState
-from sync_engine import _get_sync_state, register_sync_state_callback
+from sync_engine import get_sync_state, register_sync_state_callback
 
 if getattr(sys, "frozen", False):
     _IMAGES_DIR = Path(sys._MEIPASS) / "images"  # type: ignore[attr-defined]
@@ -33,7 +33,7 @@ def _load_tray_image() -> Image.Image:
 
 
 def _status_text(_item: Any) -> str:
-    return _TRAY_STATUS_TEXT.get(_get_sync_state(), _TRAY_STATUS_TEXT[SyncState.IDLE])
+    return _TRAY_STATUS_TEXT.get(get_sync_state(), _TRAY_STATUS_TEXT[SyncState.IDLE])
 
 
 def _run_tray(port: int) -> None:

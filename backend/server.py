@@ -32,14 +32,14 @@ from persistence import (
 from steam import get_recent_games, get_thumbnail
 from sunshine import get_managed_apps, has_desktop_app
 from sync_engine import (
-    _do_auto_sync, _is_streaming_active, _try_auto_sync,  # noqa: F401 (re-exported for tests)
-    _SyncEventHandler, _schedule_sync, _set_sync_state, _get_sync_state,  # noqa: F401
-    _get_games_version, _bump_games_version,  # noqa: F401
-    _sync_log, _sync_log_lock,
-    _sse_subscribers, _sse_lock, _sse_push, _sse_push_sync_status,  # noqa: F401
-    _sync_timer, _sync_timer_lock,  # noqa: F401 (re-exported for tests)
-    _append_log, _save_log,  # noqa: F401 (re-exported for tests)
-    _start_watchers,
+    do_auto_sync, is_streaming_active, try_auto_sync,  # noqa: F401 (re-exported for tests)
+    SyncEventHandler, schedule_sync, set_sync_state, get_sync_state,  # noqa: F401
+    get_games_version, bump_games_version,  # noqa: F401
+    sync_log, sync_log_lock,
+    sse_subscribers, sse_lock, sse_push, sse_push_sync_status,  # noqa: F401
+    sync_debouncer,  # noqa: F401 (re-exported for tests)
+    append_log, _save_log,  # noqa: F401 (re-exported for tests)
+    start_watchers,
 )
 from startup import get_run_at_startup, set_run_at_startup
 from tray import _run_tray
@@ -172,7 +172,7 @@ def api_update_settings() -> Response | tuple[Response, int]:
     if "run_at_startup" in updates:
         set_run_at_startup(updates["run_at_startup"])
     if {"excluded_games", "included_games", "count", "auto_sync", "config_path", "desktop_position"} & updates.keys():
-        _schedule_sync()
+        schedule_sync()
     return jsonify({"status": "ok"})
 
 
@@ -186,48 +186,48 @@ def api_get_config() -> Response:
 
 @app.route("/api/sync", methods=["POST"])
 def api_manual_sync() -> Response | tuple[Response, int]:
-    _set_sync_state(SyncState.SYNCING)
+    set_sync_state(SyncState.SYNCING)
     try:
-        synced = _do_auto_sync()
+        synced = do_auto_sync()
         if synced:
-            _append_log("manual", True, "Synced games")
+            append_log("manual", True, "Synced games")
         else:
-            _append_log("manual", True, "No changes, sync skipped")
+            append_log("manual", True, "No changes, sync skipped")
         return jsonify({"status": "ok"})
     except Exception as exc:
-        _append_log("manual", False, str(exc).splitlines()[0], detail=traceback.format_exc())
+        append_log("manual", False, str(exc).splitlines()[0], detail=traceback.format_exc())
         return jsonify({"error": str(exc).splitlines()[0]}), 500
     finally:
-        _set_sync_state(SyncState.IDLE)
+        set_sync_state(SyncState.IDLE)
 
 
 @app.route("/api/sync-status")
 def api_sync_status() -> Response:
-    return jsonify({"state": _get_sync_state(), "games_version": _get_games_version()})
+    return jsonify({"state": get_sync_state(), "games_version": get_games_version()})
 
 
 @app.route("/api/log")
 def api_get_log() -> Response:
-    with _sync_log_lock:
-        return jsonify([e.model_dump() for e in sorted(_sync_log, key=lambda e: e.timestamp, reverse=True)])
+    with sync_log_lock:
+        return jsonify([e.model_dump() for e in sorted(sync_log, key=lambda e: e.timestamp, reverse=True)])
 
 
 @app.route("/api/events")
 def api_events() -> Response:
     def stream():
         q: queue.SimpleQueue = queue.SimpleQueue()
-        with _sse_lock:
-            _sse_subscribers.add(q)
+        with sse_lock:
+            sse_subscribers.add(q)
         try:
-            yield f"event: sync_status\ndata: {json.dumps({'state': _get_sync_state(), 'games_version': _get_games_version()})}\n\n"
+            yield f"event: sync_status\ndata: {json.dumps({'state': get_sync_state(), 'games_version': get_games_version()})}\n\n"
             while True:
                 try:
                     yield q.get(timeout=30)
                 except queue.Empty:
                     yield ": keepalive\n\n"
         finally:
-            with _sse_lock:
-                _sse_subscribers.discard(q)
+            with sse_lock:
+                sse_subscribers.discard(q)
 
     return Response(
         stream(),
@@ -290,7 +290,7 @@ def _main(_argv):
             _check_port(port)
             webbrowser.open(f"http://localhost:{port}")
         else:
-            _start_watchers()
+            start_watchers()
         app.run(port=port, debug=True, threaded=True)
     else:
         _check_port(port)
@@ -301,7 +301,7 @@ def _main(_argv):
             daemon=True,
         )
         flask_thread.start()
-        _start_watchers()
+        start_watchers()
         webbrowser.open(f"http://localhost:{port}")
         _run_tray(port)
         os._exit(0)
