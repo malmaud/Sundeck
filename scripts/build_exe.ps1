@@ -10,11 +10,16 @@ npm install
 npm run build
 Pop-Location
 
+Write-Host "==> Converting favicon to ICO..."
+uv --project "$ROOT\backend" run python -c "from PIL import Image; Image.open(r'$ROOT\images\favicon.png').save(r'$ROOT\images\favicon.ico')"
+
 Write-Host "==> Bundling Python app with PyInstaller..."
 Push-Location "$ROOT\backend"
 uv run python -m PyInstaller `
   --name sundeck `
   --onefile `
+  --noconsole `
+  --icon "..\images\favicon.ico" `
   --clean `
   --noconfirm `
   --add-data "..\ui\index.html;ui" `
